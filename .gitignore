@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+install/
+log/
+
+# venv
+venv/
+.venv/
+
+# OS
+.DS_Store
+
+# 로컬 브리지 설정 (실제 브로커 주소 등 — 예시 파일만 커밋)
+mqtt_bridge/config/bridge_config.yaml

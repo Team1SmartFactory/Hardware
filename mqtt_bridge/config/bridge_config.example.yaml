@@ -1,0 +1,10 @@
+# 개발용 기본값. 실제 브로커 주소가 바뀌면 이 파일을 복사해 bridge_config.yaml로
+# 만들고 launch 인자(mqtt_host/mqtt_port)로 넘기거나, docker-compose 환경변수로 대체.
+#
+# Backend(Team1SmartFactory/Backend)의 MQTT_BROKER_HOST/PORT와 반드시 같은 브로커를
+# 가리켜야 한다 — 다르면 커맨드/상태가 서로 안 보임.
+
+mqtt_bridge:
+  ros__parameters:
+    mqtt_host: "localhost"
+    mqtt_port: 1883

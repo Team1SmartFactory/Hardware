@@ -1,0 +1,6 @@
+# ROS2 없이 mqtt_bridge/mqtt_bridge/contracts.py, mqtt_link.py, topic_map.py를
+# 단독으로 테스트하기 위한 최소 의존성. bridge_node.py 자체(rclpy 필요)는 이걸로
+# 실행할 수 없다 — ROS2 환경(예: Docker 컨테이너, rclpy 설치된 곳)에서 돌릴 것.
+paho-mqtt>=2.1.0,<3
+pydantic>=2,<3
+pytest>=8

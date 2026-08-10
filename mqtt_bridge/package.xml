@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mqtt_bridge</name>
+  <version>0.0.1</version>
+  <description>
+    Team1SmartFactory 로봇(ROS2) <-> 백엔드(FastAPI/MQTT) 브리지.
+    계약은 docs/COMMAND_SCHEMA.md 참고.
+  </description>
+  <maintainer email="a691285@gmail.com">jam0629</maintainer>
+  <license>TODO</license>
+
+  <depend>rclpy</depend>
+  <!-- TODO: 실제 arm 제어에 쓸 액션/메시지 패키지 확정되면 추가
+       (예: control_msgs, trajectory_msgs, std_msgs 등) -->
+
+  <exec_depend>python3-paho-mqtt</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
