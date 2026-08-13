@@ -28,11 +28,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mqtt_bridge"))
 from mqtt_bridge.mqtt_link import MqttLink  # noqa: E402
 
 # Backend config/registry.yaml의 lines: 와 lineId/partId/thresholdRatio를 맞춰뒀다.
-# 라인 구성이 바뀌면 이 목록도 같이 고칠 것.
+# 라인 구성이 바뀌면 이 목록도 같이 고칠 것. (Backend#29: 프론트 평면도 6구역
+# line-a~line-f 기준으로 확장됨 — 예전 L1/L2/L3 3개 체제 아님)
 DEFAULT_LINES = [
-    {"lineId": "L1", "partId": "P-001", "thresholdRatio": 0.05, "cameraId": "cam-L1"},
-    {"lineId": "L2", "partId": "P-002", "thresholdRatio": 0.05, "cameraId": "cam-L2"},
-    {"lineId": "L3", "partId": "P-003", "thresholdRatio": 0.05, "cameraId": "cam-L3"},
+    {"lineId": "line-a", "partId": "P-001", "thresholdRatio": 0.05, "cameraId": "cam-line-a"},
+    {"lineId": "line-b", "partId": "P-002", "thresholdRatio": 0.05, "cameraId": "cam-line-b"},
+    {"lineId": "line-c", "partId": "P-003", "thresholdRatio": 0.05, "cameraId": "cam-line-c"},
+    {"lineId": "line-d", "partId": "P-004", "thresholdRatio": 0.05, "cameraId": "cam-line-d"},
+    {"lineId": "line-e", "partId": "P-005", "thresholdRatio": 0.05, "cameraId": "cam-line-e"},
+    {"lineId": "line-f", "partId": "P-006", "thresholdRatio": 0.05, "cameraId": "cam-line-f"},
 ]
 
 
