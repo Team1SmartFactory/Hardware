@@ -8,20 +8,53 @@
 ```
 [비전(YOLO) + 로봇 제어(ROS2)]  ──?──  [이 레포: mqtt_bridge]  ──MQTT──  [Team1SmartFactory/Backend]  ──REST/WS──  [Team1SmartFactory/Frontend]
         기존 별도 저장소                    지금 여기, 스켈레톤 상태              계약: docs/COMMAND_SCHEMA.md
+        아직 연결 안 됨                     scripts/mock_*.py로 임시 대체 중
 ```
 
-## 지금 상태 (2026-08-10 기준)
+## 지금 상태 (2026-08-13 기준)
 
-- **스켈레톤 단계.** MQTT 송수신 배관(연결, 구독, 커맨드 파싱·라우팅)까지는
-  동작 확인됨(`pytest`로 검증). **실제 ROS2 토픽/액션과의 연결은 전부 TODO.**
-- 이 상태로 그냥 띄우면: Backend가 커맨드를 보내도 아무 일도 안 일어나고, 60초
-  뒤 Backend 쪽에서 타임아웃으로 실패 처리된다. (지금 실제로 벌어지고 있는
-  상황과 동일 — 이 레포가 그 간극을 메우기 위해 생겼다.)
+- **진짜 ROS2 연동은 아직 스켈레톤 단계** (`mqtt_bridge/`) — 커맨드 파싱·라우팅
+  배관은 동작하지만, 실제 ROS2 토픽/액션과의 연결은 전부 TODO.
+- **대신 `scripts/mock_robot.py` + `scripts/mock_vision.py`로 Backend와의 MQTT
+  왕복 전체를 실제로 검증 완료.** 로컬 Mosquitto + Backend + 두 mock 스크립트를
+  같이 띄우고, `PUT /api/lines/{id}/stock`(관리자 수동 지정)으로 부족 이벤트를
+  만들었더니 PICK_LOAD → MOVE_TO → UNLOAD_RESUME → MOVE_TO(복귀) 4단계가 전부
+  mock 로봇 응답으로 끝까지 진행되고, 라인이 `restocking` → `normal`로 정확히
+  복귀하는 것까지 확인함. 재고(`line/{id}/inventory`) 경로도 currentQty 갱신·
+  이력 DB 적재·WS 브로드캐스트까지 정상 동작 확인. (자세한 건 "빠른 시작" 참고)
+- 즉 **연결 배관 자체는 증명됐고**, 남은 건 `mock_robot.py`/`mock_vision.py`를
+  실제 ROS2/YOLO로 바꿔치기하는 것뿐이다.
+- ⚠️ `line/{id}/inventory`는 mock으로 흘려보내도 currentQty만 갱신될 뿐, 임계치
+  이하로 떨어져도 승인 이벤트가 자동 생성되지는 않는다 — Backend에 그 로직
+  자체가 아직 없음(별도 gap, 이 레포 범위 밖).
 - 로봇 제어(ROS2)/비전(YOLO) 쪽 실제 코드는 이 레포에 없다. 원래 참고하려던
   저장소 URL(`jisooohh/SmartFactoryStockControl`)이 현재 `Team1SmartFactory/Frontend`로
   리다이렉트되는 걸 확인함 — **정지우 팀장님께 YOLO/ROS2 코드의 실제 현재 위치를
   확인 필요.** 확인되면 이 README와 `mqtt_bridge/mqtt_bridge/topic_map.py`를
   갱신할 것.
+
+## 빠른 시작 — mock으로 Backend 연결 왕복 검증
+
+ROS2/실제 하드웨어 없이, Backend와의 MQTT 왕복이 되는지 지금 바로 확인할 수 있다.
+
+```bash
+# 0. 로컬 MQTT 브로커 (brew install mosquitto 또는 Backend의 docker-compose)
+mosquitto -c /path/to/mosquitto.conf   # listener 1883, allow_anonymous true
+
+# 1. Backend (별도 터미널, Team1SmartFactory/Backend 레포에서)
+uvicorn app.main:app --port 8000
+
+# 2. 이 레포에서 — 모의 로봇 + 모의 비전 동시 실행 (각각 별도 터미널)
+python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements-dev.txt
+python3 scripts/mock_robot.py
+python3 scripts/mock_vision.py
+
+# 3. 부족 이벤트를 하나 만들어서 4단계 전부 도는지 확인
+curl -X PUT http://localhost:8000/api/lines/L1/stock \
+  -H "Content-Type: application/json" -d '{"verdict":"shortage","by":"관리자"}'
+# mock_robot.py 터미널에 PICK_LOAD -> MOVE_TO -> UNLOAD_RESUME -> MOVE_TO 순으로
+# 커맨드가 찍히고, 몇 초 뒤 GET /api/snapshot에서 L1.status가 다시 normal이면 성공.
+```
 
 ## 먼저 볼 문서
 
@@ -36,17 +69,25 @@ MQTT 메시지 계약 전체(토픽, 페이로드, 상태 전이). Backend 레�
 Hardware/
 ├── docs/
 │   └── COMMAND_SCHEMA.md          # MQTT 계약 (원본)
-└── mqtt_bridge/                   # ROS2 ament_python 패키지
+├── scripts/                       # 임시 mock — 실제 ROS2/YOLO 준비되면 걷어낼 것
+│   ├── mock_robot.py              # robot/+/cmd에 ACCEPTED->DONE으로 자동 응답 (rclpy 불필요)
+│   └── mock_vision.py             # line/{id}/inventory 주기 발행 (rclpy 불필요)
+└── mqtt_bridge/                   # ROS2 ament_python 패키지 (진짜 브리지, 아직 스켈레톤)
     ├── package.xml / setup.py / setup.cfg
     ├── mqtt_bridge/
     │   ├── contracts.py           # Backend와 동일한 메시지 모델 (pydantic, rclpy 불필요)
-    │   ├── mqtt_link.py           # paho-mqtt 얇은 래퍼 (rclpy 불필요)
+    │   ├── mqtt_link.py           # paho-mqtt 얇은 래퍼 (rclpy 불필요) — scripts/도 이걸 재사용
     │   ├── topic_map.py           # ★ robotId -> 실제 ROS2 토픽/액션 매핑 (TODO 채울 곳)
     │   └── bridge_node.py         # rclpy.Node 본체 — MQTT<->ROS2 라우팅
     ├── launch/bridge.launch.py
     ├── config/bridge_config.example.yaml
     └── test/test_contracts.py     # rclpy 없이 도는 단위 테스트
 ```
+
+**`scripts/` vs `mqtt_bridge/` 구분**: `scripts/`는 ROS2/실제 로봇 없이 Backend 연결만
+먼저 검증하려고 만든 임시 mock이다(이 파일들 자체가 최종 산출물이 아님). 진짜
+구현은 `mqtt_bridge/bridge_node.py`이고, ROS2 쪽이 준비되면 `scripts/`는 지우고
+`bridge_node.py`의 TODO를 채우는 게 목표다.
 
 ## 채워야 할 것 (우선순위 순)
 
@@ -57,11 +98,13 @@ Hardware/
 2. **`mqtt_bridge/bridge_node.py`의 `_dispatch_*` 메서드 4개** — 각 메서드
    안에 실제 ROS2 publish/action call을 넣고, 결과 콜백에서
    `self._publish_done(command)` 또는 `self._publish_failed(command, ...)` 호출.
-3. **`line/{lineId}/inventory` 발행** — 이 레포 범위 밖(§12 COMMAND_SCHEMA.md
-   참고). 비전(YOLO) 쪽이 직접 발행하거나 별도로 이 브리지에 합류시킬지 결정 필요.
+3. **`line/{lineId}/inventory` 발행** — 지금은 `scripts/mock_vision.py`가 대신
+   흘려보내고 있음(임시). 비전(YOLO) 쪽이 직접 발행하거나 별도로 이 브리지에
+   합류시킬지 결정 필요 — 이 레포 범위 밖(§12 COMMAND_SCHEMA.md 참고).
 4. Backend 쪽에도 별도로 채워야 할 게 있음 — INVENTORY 수신 시 임계치 이하로
    떨어지면 자동으로 `pending_approval` 이벤트를 만드는 로직이 아직 없음
    (Backend 레포에 이슈 등록 예정, 이 레포 작업과는 별개).
+5. 위 1~2가 끝나면 `scripts/mock_robot.py`·`scripts/mock_vision.py`는 삭제.
 
 ## 개발 환경
 
