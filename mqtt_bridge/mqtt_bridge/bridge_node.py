@@ -2,13 +2,15 @@
 
 역할: Backend(Team1SmartFactory/Backend)가 robot/{robotId}/cmd로 발행하는 커맨드를
 받아 ROS2 쪽(로봇 제어)으로 넘기고, ROS2 쪽 결과를 robot/{robotId}/status ·
-/telemetry · /online MQTT 토픽으로 되돌려 보낸다. 계약은 docs/COMMAND_SCHEMA.md.
+/telemetry · bridge/online MQTT 토픽으로 되돌려 보낸다. 계약은 docs/COMMAND_SCHEMA.md
+(v2, CONNECTION_PLAN.md Phase 2 반영).
 
-⚠️ 지금은 스켈레톤이다. MQTT 송수신 배관 + 커맨드 라우팅까지는 동작하지만,
-실제 ROS2 토픽/액션과의 연결(각 _dispatch_* 메서드 안)은 비어 있다 — 그래서 지금
-이 노드를 그대로 띄워도 STATUS(DONE/FAILED)가 안 나가서 백엔드 쪽은
-COMMAND_TIMEOUT_SEC(60초) 뒤에 실패 처리된다. topic_map.py에 실제 ROS2 토픽/액션
-이름을 채우고, 아래 TODO 표시된 곳을 구현해야 실제로 로봇이 움직인다.
+⚠️ 지금은 스켈레톤이다. MQTT 송수신 배관 + 커맨드 라우팅 + 방어 규약(LWT, 중복
+멱등성, 만료 검사)까지는 동작하지만, 실제 ROS2 토픽/액션과의 연결(각 _dispatch_*
+메서드 안)은 비어 있다 — 그래서 지금 이 노드를 그대로 띄워도 STATUS(DONE/FAILED)가
+안 나가서 백엔드 쪽은 액션별 타임아웃(60~120초) 뒤에 실패 처리된다. topic_map.py에
+실제 ROS2 토픽/액션 이름을 채우고, 아래 TODO 표시된 곳을 구현해야 실제로 로봇이
+움직인다.
 
 실행 (ROS2 환경에서):
     ros2 run mqtt_bridge bridge_node
@@ -18,6 +20,7 @@ COMMAND_TIMEOUT_SEC(60초) 뒤에 실패 처리된다. topic_map.py에 실제 RO
 from __future__ import annotations
 
 import re
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -31,6 +34,7 @@ from .contracts import (
     RobotState,
     Status,
     StatusPayload,
+    is_expired,
     now_iso,
 )
 from .mqtt_link import MqttLink
@@ -48,15 +52,34 @@ class BridgeNode(Node):
         host = self.get_parameter("mqtt_host").get_parameter_value().string_value
         port = self.get_parameter("mqtt_port").get_parameter_value().integer_value or 1883
 
-        self._mqtt = MqttLink(host=host, port=port)
-        self._mqtt.on_message_callback = self._on_mqtt_message
-        self._mqtt.connect()
-        self._mqtt.subscribe("robot/+/cmd", qos=1)
+        self._managed_robot_ids = list(ROBOT_TOPICS)
 
         # robotId -> 그 로봇에 마지막으로 전달된 Command. ROS2 콜백(도착 이벤트,
         # 액션 결과 등)이 비동기로 도착했을 때 "이게 어떤 커맨드에 대한 응답인지"
         # 되짚어보는 용도. 커맨드 하나 끝나면 지운다.
         self._pending: dict[str, Command] = {}
+        # robotId -> 마지막으로 처리한 commandId. QoS 1 중복 배달 시 재실행을 막는다
+        # (COMMAND_SCHEMA.md §6.1).
+        self._last_command_id: dict[str, str] = {}
+
+        self._mqtt = MqttLink(host=host, port=port, client_id="hardware-bridge")
+        self._mqtt.on_message_callback = self._on_mqtt_message
+        # 브리지 프로세스 전체의 생사 신호(§9a) — 커넥션 하나당 LWT는 하나뿐이라
+        # 로봇별이 아니라 "이 브리지가 관리하는 로봇 전부"를 한 번에 알린다
+        # (CONNECTION_PLAN.md C1: 로봇별 커넥션 분리는 과설계로 명시적 금지).
+        self._mqtt.set_last_will(
+            "bridge/online",
+            {"online": False, "robotIds": self._managed_robot_ids},
+            qos=1,
+            retain=True,
+        )
+        self._mqtt.connect()
+        for _ in range(50):  # 최대 5초, mock_robot.py/mock_vision.py와 동일한 대기 패턴
+            if self._mqtt.is_connected:
+                break
+            time.sleep(0.1)
+        self._mqtt.subscribe("robot/+/cmd", qos=1)
+        self._publish_bridge_online()
 
         # TODO: 여기서 topic_map.ROBOT_TOPICS를 순회하며 실제 ROS2 subscription/
         # action client를 만들어야 한다. 지금은 골격만 있다 — 예시:
@@ -74,13 +97,15 @@ class BridgeNode(Node):
         #               self, FollowJointTrajectory, topics.arm_action  # 실제 액션 타입 확인 필요
         #           )
 
-        # 로봇별 온라인 신호. paho의 LWT는 커넥션 하나당 토픽 하나뿐이라 로봇별로
-        # 따로 못 걸어서, 대신 주기적으로 online:true를 재발행하는 방식으로 흉내낸다.
-        # (진짜 장애 감지가 필요하면 로봇별 MQTT 커넥션을 분리하거나 ROS2 쪽
-        # heartbeat/liveliness를 봐서 online:false를 명시적으로 보내는 로직 추가할 것)
-        self.create_timer(5.0, self._publish_online_heartbeat)
+        self.get_logger().info(f"MQTT 브리지 시작 (broker={host}:{port}, 관리 로봇: {self._managed_robot_ids})")
 
-        self.get_logger().info(f"MQTT 브리지 시작 (broker={host}:{port}, 관리 로봇: {list(ROBOT_TOPICS)})")
+    def _publish_bridge_online(self) -> None:
+        self._mqtt.publish(
+            "bridge/online",
+            {"online": True, "robotIds": self._managed_robot_ids, "ts": now_iso()},
+            qos=1,
+            retain=True,
+        )
 
     # ------------------------------------------------------------------
     # MQTT -> ROS2
@@ -105,6 +130,24 @@ class BridgeNode(Node):
             )
             return
 
+        # §6.1 중복 수신 멱등성: 같은 로봇에 직전과 동일한 commandId가 재수신되면
+        # (QoS 1 재배달) 재실행하지 않고 마지막으로 보냈던 ACCEPTED만 재발행한다.
+        if self._last_command_id.get(command.robotId) == command.commandId:
+            self.get_logger().info(
+                f"중복 커맨드 재수신, 재실행 없이 ACCEPTED만 재발행: {command.robotId} {command.commandId}"
+            )
+            self._publish_status(command, RobotState.ACCEPTED, detail="ACCEPTED")
+            return
+
+        # §6.1 만료 검사: 수신 시각이 timestamp+timeoutSec을 지났으면 실행하지 않고
+        # 즉시 FAILED(TIMEOUT)를 반송한다 — 브로커 재접속으로 늦게 배달된 커맨드가
+        # 뒤늦게 로봇을 움직이는 사고를 막는다.
+        if is_expired(command):
+            self.get_logger().warning(f"만료된 커맨드, 실행하지 않고 즉시 FAILED 반송: {command.robotId} {command.commandId}")
+            self._publish_failed(command, ErrorCode.TIMEOUT.value, "expired")
+            return
+
+        self._last_command_id[command.robotId] = command.commandId
         self._pending[command.robotId] = command
         self._publish_status(command, RobotState.ACCEPTED, detail="ACCEPTED")
         self._dispatch(command, topics)
@@ -182,14 +225,16 @@ class BridgeNode(Node):
         """dispatch 콜백 안에서 성공적으로 끝났을 때 호출할 헬퍼."""
         self._publish_status(command, RobotState.DONE, detail=DONE_DETAIL_BY_ACTION.get(command.action))
 
-    def _publish_failed(self, command: Command, code: ErrorCode, message: str) -> None:
+    def _publish_failed(self, command: Command, code: str, message: str) -> None:
         self._publish_status(command, RobotState.FAILED, error=ErrorDetail(code=code, message=message))
 
-    def _publish_online_heartbeat(self) -> None:
-        for robot_id in ROBOT_TOPICS:
-            self._mqtt.publish(f"robot/{robot_id}/online", {"online": True}, qos=1)
-
     def destroy_node(self) -> bool:
+        # 정상 종료 시에도 곧바로 offline을 알린다 — LWT는 비정상 종료(프로세스 강제
+        # 종료, 네트워크 단절)에 대한 백업이고, 정상 종료 경로에서는 굳이 브로커가
+        # keepalive 타임아웃을 기다릴 필요 없이 즉시 알리는 편이 낫다.
+        self._mqtt.publish(
+            "bridge/online", {"online": False, "robotIds": self._managed_robot_ids}, qos=1, retain=True
+        )
         self._mqtt.disconnect()
         return super().destroy_node()
 

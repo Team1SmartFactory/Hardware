@@ -9,7 +9,7 @@ rclpy에 의존하지 않는 순수 파이썬(pydantic)이라 ROS2 환경 밖에
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Literal
 
@@ -178,3 +178,18 @@ DONE_DETAIL_BY_ACTION: dict[CommandAction, str] = {
     CommandAction.HOME: "HOMED",
     CommandAction.ABORT: "ABORTED",
 }
+
+
+def is_expired(command: Command, *, now: datetime | None = None) -> bool:
+    """COMMAND_SCHEMA.md §6.1: 수신 시각이 timestamp+timeoutSec을 지났으면 만료.
+
+    rclpy에 의존하지 않는 순수 함수로 bridge_node.py 밖에 둬서(PROJECT_RULES.md
+    "rclpy 의존은 bridge_node.py 한 파일에 격리") ROS2 없이 테스트할 수 있게 한다.
+    `now`는 테스트에서 시각을 고정하기 위한 주입 포인트 — 실서비스에서는 생략한다.
+    """
+    try:
+        issued_at = datetime.fromisoformat(command.timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return False  # 형식이 이상하면 만료 판정을 포기하고 통과시킨다(보수적 선택)
+    reference = now if now is not None else datetime.now(timezone.utc)
+    return reference > issued_at + timedelta(seconds=command.timeoutSec)
