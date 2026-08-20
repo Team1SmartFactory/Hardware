@@ -1,0 +1,155 @@
+# ROS2_WIRING — mqtt_bridge를 실제 로봇 시스템에 잇는 구현 계획
+
+> 2026-08-20, 로봇 제어(ROS2) 쪽에서 작성. topic_map.py의 추정값들을 실제 값으로
+> 확정하고, `_dispatch_*` 4개를 어떻게 채울지 정한다. README의 "채워야 할 것"
+> 1~2번이 이 문서의 범위다.
+
+## 0. 로봇 제어(ROS2) 코드의 실제 위치 — 확인 끝
+
+README에서 "정지우 팀장님께 확인 필요"라던 저장소는
+**`github.com/noeyod02/omx-beagle-smart-factory`(브랜치 `main`)** 이다.
+작업 사본은 PC1 `/home/itec/open_manipulator`(브랜치 `feature-stock-relay`,
+main으로 푸시됨), PC2 `~/ros2_ws/src/open_manipulator`.
+아래 모든 토픽/노드는 그 저장소의 `open_manipulator_playground` 패키지 것이다.
+
+## 1. 제일 중요한 설계 사실: 팔은 "액션"이 아니라 "태스크 매니저"로 부린다
+
+topic_map.py는 팔마다 `arm_action`(FollowJointTrajectory) + `gripper_action`을
+추정해 뒀는데, **그 계층으로 내려가면 안 된다.** 실제 시스템에는 스테이션마다
+`stock_task_manager_node`가 상주하며, 티칭된 좌표·경유점·후퇴 고도·그리퍼 폭을
+전부 알고 "어디서 집어 어디에 놓아라" 한 문장짜리 transfer를 12~13스텝으로
+수행한다. 브리지가 raw 액션으로 관절을 직접 던지면 이 안전장치를 전부 우회하게
+되고, 같은 컨트롤러에 커맨더가 둘이 되는 순간 goal끼리 CANCELED로 서로 죽인다
+(실사고 전력 있음).
+
+따라서 `RobotTopics`는 팔에 대해 이렇게 바뀌어야 한다:
+
+```python
+@dataclass(frozen=True)
+class RobotTopics:
+    role: RobotRole
+    # 팔(STORAGE_ARM/LINE_ARM): 태스크 매니저의 transfer/state 토픽 (std_msgs/String, JSON)
+    transfer_topic: str | None = None   # 발행: {"from": ..., "to": ..., "id": ...}
+    state_topic: str | None = None      # 구독: {"state", "job", "last_job": {...}, ...}
+    # AMR(Beagle)
+    goal_topic: str | None = None       # 발행: 스테이션 이름 (std_msgs/String)
+    beagle_state_topic: str | None = None  # 구독: {"state","station","ready_for_arm",...}
+    estop_topic: str | None = None
+```
+
+## 2. 실제 값 (topic_map.py에 들어갈 것)
+
+| robotId | 실제 연결 | 비고 |
+|---|---|---|
+| `omxf-storage-01` | transfer `/station_a/stock/transfer`, state `/station_a/stock/task_state` | 보관소 팔 (PC1) |
+| `beagle-01` | goal `/beagle/goto`, state `/beagle/state`, estop `/beagle/estop` | 브릿지 노드는 Docker 컨테이너에서 상주 |
+| `omxf-line-01` | transfer `/station_b/stock/transfer`, state `/station_b/stock/task_state` | 라인 팔 (PC1), 셀 `bin_a`/`bin_b` 담당 |
+| (예정) `omxf-line-02` | transfer `/station_c/stock/transfer`, state `/station_c/stock/task_state` | PC2의 세 번째 팔, 셀 `bin_c`/`bin_d`. 티칭·레이아웃 미완이라 아직 태스크 매니저 없음 |
+
+모든 토픽 타입은 `std_msgs/String`(JSON 문자열)이다. ROS2 환경은 도메인 0,
+기본 rmw(fastrtps) — PC1/PC2 크로스머신 통신은 검증돼 있고, 브리지는 PC1
+호스트에서 돌리면 된다 (⚠️ 컨테이너 안에서 돌리면 RMW_IMPLEMENTATION=zenoh /
+ROS_DOMAIN_ID=30 기본값 때문에 아무것도 안 보인다 — 컨테이너에서 돌려야 한다면
+`unset RMW_IMPLEMENTATION; export ROS_DOMAIN_ID=0 FASTDDS_BUILTIN_TRANSPORTS=UDPv4`).
+
+## 3. 커맨드 번역 (`_dispatch_*` 구현 사양)
+
+### PICK_LOAD (STORAGE_ARM)
+
+```
+발행: /station_a/stock/transfer  {"from": "warehouse", "to": "carrier", "id": <commandId>}
+```
+
+완료 판정: `/station_a/stock/task_state`의 `last_job.id == commandId`가 되는
+순간 — `result: "ok"` → DONE(`LOADED`), `"failed"`/`"rejected"` → FAILED
+(`last_job.error`를 message로). 태스크 매니저는 요청에 실은 `id`를 결과에
+그대로 echo하므로 commandId 왕복 방어가 공짜로 된다. `state`가 `busy`인 동안
+RUNNING을 흘려보내면 된다.
+
+주의: A의 warehouse pick_points는 **소모 예산**(런치당 2회, 사람이 부품을
+재보급)이다. 소진되면 `last_job.result: "failed"` + "the warehouse is empty"로
+오고 태스크 매니저가 `blocked`로 멈춘다 → FAILED(HARDWARE)로 올리고, 복구는
+현장에서 재보급 후 태스크 매니저 재시작.
+
+### MOVE_TO (AMR)
+
+```
+발행: /beagle/goto  data: "<station_a | station_b>"
+```
+
+destination 매핑이 필요하다: Backend는 `"L1"`/`"line-a"`류의 라인 id 또는
+`"STORAGE"`를 보낸다 → `STORAGE`→`station_a`, 라인 id→`station_b`(어느 라인이든
+물리 베이는 하나다). 매핑 테이블은 topic_map.py에 상수로 둔다.
+
+완료 판정: `/beagle/state`(0.5s 주기 JSON)에서 `station == 목표` **그리고**
+`ready_for_arm: true`가 되는 순간 DONE(`ARRIVED`). 발행 시점에 이미 목표
+스테이션이면 즉시 DONE. `detail`에 에러 문자열이 차 있으면 FAILED.
+
+### UNLOAD_RESUME (LINE_ARM)
+
+```
+발행: /station_b/stock/transfer  {"from": "carrier", "to": "<bin_a|bin_b>", "id": <commandId>}
+```
+
+완료 판정은 PICK_LOAD와 동일(DONE detail은 `RESUMED`). **`payload.lineId →
+칸(bin) 매핑을 확정해야 한다** — 우리 쪽 목적지는 `bin_a`/`bin_b`(+예정
+`bin_c`/`bin_d`)이고 Backend registry는 `line-a`~`line-f` 6구역이다. 실물 칸은
+4개뿐이므로 `line-a→bin_a, line-b→bin_b, line-c→bin_c, line-d→bin_d,
+line-e/f→미지원(FAILED UNSUPPORTED)`을 제안한다. Backend registry.yaml과 같이
+정할 것.
+
+### HOME
+
+팔: 모든 transfer가 마지막 스텝으로 home 복귀를 포함하므로 **별도 동작 없이
+즉시 DONE(`HOMED`)** 응답이 맞다 (idle이 아닐 때는 FAILED BUSY).
+비글: `MOVE_TO station_a`와 동일하게 처리.
+
+### ABORT
+
+비글: `/beagle/estop` 발행. 팔: 태스크 매니저에 중단 인터페이스가 없다 —
+정직하게 **FAILED(UNSUPPORTED)** 로 응답한다. (추가하려면 로봇 저장소 쪽
+task manager에 abort 토픽을 넣는 작업이 선행돼야 함 — phase 2.)
+
+## 4. 오케스트레이터 충돌 — 반드시 정할 운영 규칙
+
+Backend orchestrator의 PICK_LOAD→MOVE_TO→UNLOAD_RESUME→MOVE_TO 4단계는 로봇
+저장소의 `stock_relay_node`가 하는 일과 **동일하다.** 지휘자가 둘이면 같은
+태스크 매니저에 transfer가 겹쳐 들어가 한쪽이 rejected로 죽는다.
+
+규칙: **대시보드 연동 모드에서는 `/stock/refill_request`를 아무도 발행하지
+않는다** (relay 노드는 그 요청 없이는 영원히 idle이므로 띄워둬도 무해). 단독
+데모 때만 refill_request를 쓴다. 브리지 README/런치 문서에 이 규칙을 명시할 것.
+
+## 5. 이 계약에서 아직 못 주는 것
+
+- **telemetry (§8)**: 비글은 SLAM/GPS가 없고 데드레코닝뿐이라 x/y 포즈 스트림이
+  없다. QoS 0 선택 항목이므로 phase 1에서는 발행 생략. (원하면 루트 진행률로
+  1차원 보간 위치를 합성하는 게 phase 2 후보.)
+- **inventory (§10)**: 로봇 저장소에 `stock_monitor_node`(칸 ROI 기반 재고
+  감시, reference/yolo 백엔드)가 있으나 셀 재배치로 ROI가 전부 플레이스홀더다.
+  카메라 셋업/캘리브레이션(`stock_calibrate.py`) 후 monitor의 출력을
+  `line/{lineId}/inventory` 스키마로 변환해 발행하는 어댑터를 브리지에 붙인다
+  — phase 2. 그때까지는 `PUT /api/lines/{id}/stock` 수동 트리거로 시연.
+
+## 6. 작업 순서 (DoD 포함)
+
+1. `topic_map.py`를 §1~2대로 개편 — DoD: 단위 테스트에서 세 robotId가 실제
+   토픽 문자열로 해석됨.
+2. `bridge_node.py`에 팔 state 구독(스테이션당 1개) + `last_job.id` 매칭 로직,
+   비글 state 구독 + 도착 판정 구현. `_dispatch_arm/_move/_home/_abort`를 §3
+   사양대로 채움 — DoD: ROS2 환경에서 브리지 + 실물 스택을 띄우고
+   `mosquitto_pub`로 §6 커맨드 4종을 손으로 넣어 STATUS가 스키마대로 돌아옴.
+3. Backend 붙여 mock 검증 시나리오 재현(`PUT /api/lines/L1/stock` 부족 이벤트)
+   — DoD: 실물 4단계가 끝까지 돌고 라인 상태가 `restocking`→`normal` 복귀.
+   이때 mock_robot.py는 반드시 꺼둘 것 (같은 커맨드에 둘이 응답하면 안 됨).
+4. `scripts/mock_robot.py` 삭제 (mock_vision.py는 §5 inventory 갭이 해소될
+   때까지 유지).
+
+## 7. 실행 배치 참고
+
+- 브리지: PC1 호스트, `ros2 launch mqtt_bridge bridge.launch.py` (도메인 0 기본값
+  그대로). MQTT는 Backend docker-compose의 Mosquitto(`localhost:1883`).
+- 로봇 스택 기동 순서는 로봇 저장소 문서 기준: **Beagle 브릿지(컨테이너) 먼저,
+  팔 런치는 그 다음** (동글 스캔이 Dynamixel 버스를 끊는 문제). 브리지(MQTT)는
+  순서 무관.
+- PC2의 station_c는 티칭 완료 후 이 문서의 표에 합류시킨다.
