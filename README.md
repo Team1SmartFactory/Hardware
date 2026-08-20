@@ -38,8 +38,11 @@
 ROS2/실제 하드웨어 없이, Backend와의 MQTT 왕복이 되는지 지금 바로 확인할 수 있다.
 
 ```bash
-# 0. 로컬 MQTT 브로커 (brew install mosquitto 또는 Backend의 docker-compose)
-mosquitto -c /path/to/mosquitto.conf   # listener 1883, allow_anonymous true
+# 0. 로컬 MQTT 브로커 — 데모 환경(우분투, FE/BE/HW 전부 로컬 동일 머신)이면
+#    scripts/setup_mosquitto.sh 하나로 설치+설정+왕복 테스트까지 끝난다.
+#    (다른 OS에서 개발 중이면 brew install mosquitto 등으로 직접 띄우고
+#    listener 1883 / allow_anonymous true만 맞추면 된다 — 인증을 쓰지 않는다)
+./scripts/setup_mosquitto.sh
 
 # 1. Backend (별도 터미널, Team1SmartFactory/Backend 레포에서)
 uvicorn app.main:app --port 8000
@@ -69,9 +72,10 @@ MQTT 메시지 계약 전체(토픽, 페이로드, 상태 전이). Backend 레�
 Hardware/
 ├── docs/
 │   └── COMMAND_SCHEMA.md          # MQTT 계약 (원본)
-├── scripts/                       # 임시 mock — 실제 ROS2/YOLO 준비되면 걷어낼 것
-│   ├── mock_robot.py              # robot/+/cmd에 ACCEPTED->DONE으로 자동 응답 (rclpy 불필요)
-│   └── mock_vision.py             # line/{id}/inventory 주기 발행 (rclpy 불필요)
+├── scripts/
+│   ├── setup_mosquitto.sh         # 데모 환경(우분투) MQTT 브로커 설치+설정+검증 (몇 번 돌려도 안전)
+│   ├── mock_robot.py              # 임시 mock — robot/+/cmd에 ACCEPTED->DONE으로 자동 응답 (rclpy 불필요)
+│   └── mock_vision.py             # 임시 mock — line/{id}/inventory 주기 발행 (rclpy 불필요)
 └── mqtt_bridge/                   # ROS2 ament_python 패키지 (진짜 브리지, 아직 스켈레톤)
     ├── package.xml / setup.py / setup.cfg
     ├── mqtt_bridge/
@@ -127,6 +131,33 @@ ros2 launch mqtt_bridge bridge.launch.py mqtt_host:=localhost mqtt_port:=1883
 `mqtt_host`/`mqtt_port`는 **`Team1SmartFactory/Backend`의 `MQTT_BROKER_HOST`/
 `MQTT_BROKER_PORT`와 반드시 같은 브로커**를 가리켜야 한다 (Backend 개발 환경은
 `docker-compose`로 로컬 Mosquitto를 띄움, Backend README 참고).
+
+### 우분투 데모 환경 — FE/BE/HW를 한 머신에 로컬로 띄우기
+
+실제 데모는 로봇 제어(ROS2)/비전(YOLO)이 우분투에서 돌기 때문에, 이 브리지도 같은
+우분투 머신에서 실행해야 한다(`mqtt_bridge`가 `rclpy` 의존이라 다른 OS에서는 애초에
+안 돌아간다). Backend/Frontend는 OS를 가리지 않으므로 같은 머신에 같이 올리는 게
+가장 단순하다 — Backend·Frontend 코드도 이미 `localhost` 기준으로 설정돼 있어
+따로 고칠 게 없다.
+
+```bash
+# 1. MQTT 브로커 (최초 1회, 이후엔 systemd가 자동 기동)
+./scripts/setup_mosquitto.sh
+
+# 2. Backend
+cd ../Backend && .venv/bin/uvicorn app.main:app --port 8000
+
+# 3. 이 레포 — ROS2 브리지
+colcon build --packages-select mqtt_bridge && source install/setup.bash
+ros2 run mqtt_bridge bridge_node
+
+# 4. Frontend
+cd ../Frontend/src/dashboard-frontend && npm run dev
+```
+
+브리지가 뜨면 `bridge/online:true`가 자동 발행되고 Backend 로그에 로봇들이 idle로
+잡히면 정상 연결이다. `mosquitto_sub -h localhost -t '#' -v`로 전체 토픽을 실시간
+훑어보면 뭐가 오가는지 바로 보여서 디버깅에 유용하다.
 
 ## 관련 저장소
 
