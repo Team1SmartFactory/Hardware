@@ -2,12 +2,16 @@
 """MQTT 모의 비전(재고 감지) 발행기. ROS2/rclpy, YOLO 불필요.
 
 목적: 실제 비전(YOLO) 파이프라인이 line/{lineId}/inventory를 발행하게 되기 전,
-Backend의 재고 수신 경로(currentQty 갱신, 재고 이력 DB 적재, WS 브로드캐스트)를
-지금 바로 검증하기 위한 임시 스텁.
+Backend의 재고 수신 경로(currentQty 갱신, 재고 이력 DB 적재, WS 브로드캐스트,
+임계치 이하 시 승인 대기 이벤트 자동 생성)를 검증하기 위한 임시 스텁.
+실물화되면 scripts/vision_bridge.py(stock_state.json 폴링 방식)로 교체한다
+(CONNECTION_PLAN.md Phase 3 참고).
 
-⚠️ Backend에는 아직 "임계치 이하 감지 -> 승인 이벤트 자동 생성" 로직이 없다
-(2026-08 기준, 알려진 gap). 이 스크립트를 띄워도 currentQty만 갱신될 뿐, 부족
-이벤트가 저절로 생기지는 않는다 — 그건 Backend 쪽 별도 작업.
+COMMAND_SCHEMA.md §10 계약의 참조 구현이다:
+  - Inventory pydantic 모델로 조립 (raw dict 손조립 금지)
+  - retain=true
+  - 변화 시에만 발행 (areaRatio ±0.02 초과 변화 또는 status 전이, 첫 1회는 무조건)
+  - 발행 주기 상한 1Hz (--interval 하한 1초)
 
 실행:
     python3 scripts/mock_vision.py
@@ -20,16 +24,20 @@ import argparse
 import random
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mqtt_bridge"))
 
+from mqtt_bridge.contracts import (  # noqa: E402
+    Inventory,
+    InventorySource,
+    InventoryStatus,
+    now_iso,
+)
 from mqtt_bridge.mqtt_link import MqttLink  # noqa: E402
 
 # Backend config/registry.yaml의 lines: 와 lineId/partId/thresholdRatio를 맞춰뒀다.
-# 라인 구성이 바뀌면 이 목록도 같이 고칠 것. (Backend#29: 프론트 평면도 6구역
-# line-a~line-f 기준으로 확장됨 — 예전 L1/L2/L3 3개 체제 아님)
+# 라인 구성이 바뀌면 이 목록도 같이 고칠 것.
 DEFAULT_LINES = [
     {"lineId": "line-a", "partId": "P-001", "thresholdRatio": 0.05, "cameraId": "cam-line-a"},
     {"lineId": "line-b", "partId": "P-002", "thresholdRatio": 0.05, "cameraId": "cam-line-b"},
@@ -39,10 +47,8 @@ DEFAULT_LINES = [
     {"lineId": "line-f", "partId": "P-006", "thresholdRatio": 0.05, "cameraId": "cam-line-f"},
 ]
 
-
-def _now_iso() -> str:
-    now = datetime.now(timezone.utc)
-    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+# §10.1 발행 규칙: 직전 발행값 대비 이만큼 초과 변해야 재발행한다.
+PUBLISH_DELTA = 0.02
 
 
 class MockVision:
@@ -52,6 +58,9 @@ class MockVision:
         self.lines = lines
         # 완전 랜덤보다 그래프가 자연스럽게 이어지도록, 라인별 값을 들고 랜덤워크로 흔든다.
         self._area_ratio = {line["lineId"]: random.uniform(0.2, 0.6) for line in lines}
+        # 직전 "발행" 값 (현재 값과 다름 — 변화 시에만 발행 규칙의 기준점)
+        self._last_published: dict[str, float] = {}
+        self._last_status: dict[str, InventoryStatus] = {}
 
     def start(self) -> None:
         self.link.connect()
@@ -61,48 +70,63 @@ class MockVision:
             time.sleep(0.1)
         if not self.link.is_connected:
             print(f"[mock-vision] 경고: {self.link.host}:{self.link.port} 연결 확인 안 됨 (계속 재시도 중)")
-        print(f"[mock-vision] {[line['lineId'] for line in self.lines]} 발행 시작 (주기 {self.interval}s)")
+        print(f"[mock-vision] {[line['lineId'] for line in self.lines]} 발행 시작 (주기 {self.interval}s, on-change)")
 
     def run_forever(self) -> None:
         try:
             while True:
                 for line in self.lines:
-                    self._publish_one(line)
+                    self._tick_one(line)
                 time.sleep(self.interval)
         except KeyboardInterrupt:
             print("\n[mock-vision] 종료")
 
-    def _publish_one(self, line: dict) -> None:
+    def _tick_one(self, line: dict) -> None:
         line_id = line["lineId"]
         ratio = self._area_ratio[line_id]
         ratio = max(0.0, min(1.0, ratio + random.uniform(-0.03, 0.03)))
         self._area_ratio[line_id] = ratio
 
-        payload = {
-            "type": "INVENTORY",
-            "timestamp": _now_iso(),
-            "schemaVersion": 2,
-            "lineId": line_id,
-            "partId": line["partId"],
-            "areaRatio": round(ratio, 4),
-            "thresholdRatio": line["thresholdRatio"],
-            "qtyEstimate": max(0, round(ratio * 100)),
-            "status": "LOW" if ratio <= line["thresholdRatio"] else "OK",
-            "source": "CV_AREA",
-            "cameraId": line["cameraId"],
-        }
-        self.link.publish(f"line/{line_id}/inventory", payload, qos=1)
-        print(f"[mock-vision] {line_id} areaRatio={ratio:.3f} ({payload['status']})")
+        status = InventoryStatus.LOW if ratio <= line["thresholdRatio"] else InventoryStatus.OK
+
+        # §10.1: 변화 시에만 발행 — 첫 1회, ±PUBLISH_DELTA 초과 변화, status 전이.
+        last = self._last_published.get(line_id)
+        changed = (
+            last is None
+            or abs(ratio - last) > PUBLISH_DELTA
+            or status != self._last_status.get(line_id)
+        )
+        if not changed:
+            return
+
+        inventory = Inventory(
+            timestamp=now_iso(),
+            lineId=line_id,
+            partId=line["partId"],
+            areaRatio=round(ratio, 4),
+            thresholdRatio=line["thresholdRatio"],
+            qtyEstimate=max(0, round(ratio * 100)),
+            status=status,
+            source=InventorySource.CV_AREA,
+            cameraId=line["cameraId"],
+        )
+        self.link.publish(
+            f"line/{line_id}/inventory", inventory.model_dump(mode="json"), qos=1, retain=True
+        )
+        self._last_published[line_id] = ratio
+        self._last_status[line_id] = status
+        print(f"[mock-vision] {line_id} areaRatio={ratio:.3f} ({status.value})")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="MQTT 모의 비전(재고 감지) 발행기 (YOLO 대체용 임시)")
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=1883)
-    parser.add_argument("--interval", type=float, default=5.0, help="라인별 발행 주기(초)")
+    parser.add_argument("--interval", type=float, default=5.0, help="라인별 평가 주기(초, 하한 1 — §10.1 최대 1Hz)")
     args = parser.parse_args()
 
-    vision = MockVision(args.host, args.port, args.interval, DEFAULT_LINES)
+    interval = max(1.0, args.interval)  # §10.1: 발행 주기 상한 1Hz
+    vision = MockVision(args.host, args.port, interval, DEFAULT_LINES)
     vision.start()
     vision.run_forever()
 

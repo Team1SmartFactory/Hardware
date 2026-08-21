@@ -7,7 +7,7 @@ arm_control.py, /beagle_arrived, /gripper_controller/gripper_cmd, stock_bridge.p
 아래 딕셔너리만 고치면 된다. bridge_node.py 본체는 이 파일을 통해서만 ROS2
 토픽 이름을 알아야 하고, 하드코딩하면 안 된다.
 
-Team1BE/Backend의 config/registry.yaml과 robotId가 반드시 일치해야 한다
+Team1SmartFactory/Backend의 config/registry.yaml과 robotId가 반드시 일치해야 한다
 (그래야 백엔드가 발행하는 robot/{robotId}/cmd를 브리지가 알아본다).
 """
 
@@ -56,9 +56,10 @@ ROBOT_TOPICS: dict[str, RobotTopics] = {
         arm_action="/omxf_line_01/arm_control",  # TODO placeholder
         gripper_action="/omxf_line_01/gripper_controller/gripper_cmd",  # TODO placeholder
     ),
-    # L2/L3(시뮬레이션 로봇: omxf-storage-02/03, beagle-02/03, omxf-line-02/03)는
-    # ROS2 실물 노드가 없다면 이 맵에 넣지 않는다 — bridge_node가 매핑 없는
-    # robotId의 커맨드는 무시하고 경고만 남긴다 (실기 L1만 우선 연결).
+    # line-b~line-f(시뮬레이션 로봇: omxf-storage-02~06, beagle-02~06, omxf-line-02~06)는
+    # ROS2 실물 노드가 없으므로 이 맵에 넣지 않는다 — bridge_node가 매핑 없는
+    # robotId의 커맨드는 무시하고 경고만 남긴다 (실기는 line-a 한 라인만 연결).
+    # 시뮬 로봇 응답은 scripts/mock_robot.py가 담당한다 (CONNECTION_PLAN.md Phase 4-19).
 }
 
 

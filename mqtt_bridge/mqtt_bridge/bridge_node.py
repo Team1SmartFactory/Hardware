@@ -18,7 +18,6 @@ COMMAND_TIMEOUT_SEC(60초) 뒤에 실패 처리된다. topic_map.py에 실제 RO
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 
 import rclpy
 from rclpy.node import Node
@@ -32,17 +31,12 @@ from .contracts import (
     RobotState,
     Status,
     StatusPayload,
+    now_iso,
 )
 from .mqtt_link import MqttLink
 from .topic_map import ROBOT_TOPICS, RobotTopics, get_topics
 
 _CMD_TOPIC_RE = re.compile(r"^robot/(?P<robot_id>[^/]+)/cmd$")
-
-
-def _now_iso() -> str:
-    """COMMAND_SCHEMA.md의 timestamp 형식(밀리초 3자리, Z 고정)."""
-    now = datetime.now(timezone.utc)
-    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
 class BridgeNode(Node):
@@ -172,7 +166,7 @@ class BridgeNode(Node):
         error: ErrorDetail | None = None,
     ) -> None:
         status = Status(
-            timestamp=_now_iso(),
+            timestamp=now_iso(),
             commandId=command.commandId,
             jobId=command.jobId,
             robotId=command.robotId,

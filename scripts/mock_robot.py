@@ -8,7 +8,10 @@
 
 동작: robot/+/cmd를 구독하다가 COMMAND를 받으면 ACCEPTED -> (지연) -> DONE
 STATUS를 그대로 돌려준다. robotId를 가리지 않고 아무 커맨드에나 응답하므로
-L1/L2/L3 어느 라인의 로봇이든 그대로 동작한다.
+line-a~line-f 어느 라인의 로봇이든 그대로 동작한다.
+
+⚠️ 실기 연동 리허설 때는 실기 로봇 id의 커맨드에 응답하면 안 된다 —
+CONNECTION_PLAN.md Phase 4-19: mock은 시뮬 로봇 id 전용으로만 기동할 것.
 
 실행:
     python3 scripts/mock_robot.py
@@ -23,7 +26,6 @@ import re
 import sys
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mqtt_bridge"))
@@ -34,15 +36,11 @@ from mqtt_bridge.contracts import (  # noqa: E402
     RobotState,
     Status,
     StatusPayload,
+    now_iso,
 )
 from mqtt_bridge.mqtt_link import MqttLink  # noqa: E402
 
 _CMD_TOPIC_RE = re.compile(r"^robot/(?P<robot_id>[^/]+)/cmd$")
-
-
-def _now_iso() -> str:
-    now = datetime.now(timezone.utc)
-    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
 class MockRobot:
@@ -89,7 +87,7 @@ class MockRobot:
 
     def _publish(self, command: Command, state: RobotState, detail: str | None = None) -> None:
         status = Status(
-            timestamp=_now_iso(),
+            timestamp=now_iso(),
             commandId=command.commandId,
             jobId=command.jobId,
             robotId=command.robotId,

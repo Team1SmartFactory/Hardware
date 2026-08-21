@@ -51,18 +51,20 @@ python3 scripts/mock_robot.py
 python3 scripts/mock_vision.py
 
 # 3. 부족 이벤트를 하나 만들어서 4단계 전부 도는지 확인
-curl -X PUT http://localhost:8000/api/lines/L1/stock \
+curl -X PUT http://localhost:8000/api/lines/line-a/stock \
   -H "Content-Type: application/json" -d '{"verdict":"shortage","by":"관리자"}'
 # mock_robot.py 터미널에 PICK_LOAD -> MOVE_TO -> UNLOAD_RESUME -> MOVE_TO 순으로
-# 커맨드가 찍히고, 몇 초 뒤 GET /api/snapshot에서 L1.status가 다시 normal이면 성공.
+# 커맨드가 찍히고, 몇 초 뒤 GET /api/snapshot에서 line-a의 status가 다시 normal이면 성공.
 ```
 
 ## 먼저 볼 문서
 
-**[`docs/COMMAND_SCHEMA.md`](docs/COMMAND_SCHEMA.md)** — 로봇과 백엔드가 주고받는
-MQTT 메시지 계약 전체(토픽, 페이로드, 상태 전이). Backend 레포 코드가 계속
-참조하는데 정작 Backend에는 없던 문서라, 여기를 원본으로 둔다. **백엔드
-계약이 바뀌면 이 문서부터 갱신.**
+- **[`docs/COMMAND_SCHEMA.md`](docs/COMMAND_SCHEMA.md)** — 로봇/비전과 백엔드가 주고받는
+  MQTT 메시지 계약 전체(토픽·retain·QoS 총괄표, 페이로드, 수신측 방어 규약). 이 계약의
+  **원본(단일 진실)**. 계약이 바뀌면 이 문서부터 개정하고 양측 contracts 코드를 동기 반영.
+- **[`docs/CONNECTION_PLAN.md`](docs/CONNECTION_PLAN.md)** — HW↔BE 연결 실행 계획.
+  3자 자문 검토의 확정 결정·쟁점 판정·실행 순서(Phase 0~4)·과설계 금지 목록.
+- 팀 공통 개발 규칙은 `Team1SmartFactory/Backend`의 `docs/PROJECT_RULES.md` 참고.
 
 ## 구조
 

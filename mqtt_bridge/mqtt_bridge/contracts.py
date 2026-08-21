@@ -9,10 +9,21 @@ rclpy에 의존하지 않는 순수 파이썬(pydantic)이라 ROS2 환경 밖에
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+def now_iso() -> str:
+    """계약 timestamp 형식 (COMMAND_SCHEMA.md §1): UTC, 밀리초 정확히 3자리, 'Z' 고정.
+
+    발행측은 반드시 이 헬퍼를 쓴다 — bridge_node/mock_robot/mock_vision에 같은 구현이
+    3중 복제돼 있던 것을 여기로 통합 (Hardware#5).
+    """
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +53,9 @@ class RobotState(str, Enum):
 
 
 class ErrorCode(str, Enum):
+    """표준 에러 코드 5종 — COMMAND_SCHEMA.md §5 개정으로 wire 상에서는 자유 문자열이
+    허용되지만(ErrorDetail.code: str), 발행측은 가능한 한 이 5종을 쓰는 걸 권장한다."""
+
     TIMEOUT = "TIMEOUT"
     BUSY = "BUSY"
     UNSUPPORTED = "UNSUPPORTED"
@@ -53,6 +67,20 @@ class TelemetrySource(str, Enum):
     GPS = "GPS"
     SLAM = "SLAM"
     ODOM = "ODOM"
+
+
+class InventoryStatus(str, Enum):
+    """INVENTORY.status — §10 개정으로 진단 필드로 격하됨 (부족 판정의 유일 판정자는
+    BE의 registry.yaml 임계치 비교). Backend app/contracts/enums.py와 1:1."""
+
+    OK = "OK"
+    LOW = "LOW"
+
+
+class InventorySource(str, Enum):
+    CV_AREA = "CV_AREA"
+    CV_DEPTH = "CV_DEPTH"
+    LOAD_CELL = "LOAD_CELL"
 
 
 # ---------------------------------------------------------------------------
@@ -79,8 +107,12 @@ class Command(MessageBase):
 
 
 class ErrorDetail(BaseModel):
-    code: ErrorCode
+    """COMMAND_SCHEMA.md §5. code는 자유 문자열(표준 5종은 ErrorCode 상수 권장),
+    detailCode는 로봇별 특화 에러 식별자(BE는 저장·로그만 하고 해석 안 함)."""
+
+    code: str
     message: str
+    detailCode: str | None = None
 
 
 class StatusPayload(BaseModel):
@@ -114,6 +146,27 @@ class Telemetry(MessageBase):
     position: Position
     battery: float = Field(ge=0, le=1)
     source: TelemetrySource
+
+
+class Inventory(MessageBase):
+    """비전 -> 백엔드. line/{lineId}/inventory 토픽으로 발행 (COMMAND_SCHEMA.md §10).
+
+    retain=true, 변화 시에만(±0.02 또는 status 전이), 최대 1Hz — §10.1 발행 규칙.
+    status/thresholdRatio는 진단 필드(BE가 판정에 쓰지 않음), partName/requiredQty는
+    "박스 교체 로직" 확정 전 예약 슬롯(기본 null).
+    """
+
+    type: Literal["INVENTORY"] = "INVENTORY"
+    lineId: str
+    partId: str
+    areaRatio: float = Field(ge=0, le=1)
+    thresholdRatio: float = Field(ge=0, le=1)
+    qtyEstimate: int
+    status: InventoryStatus
+    source: InventorySource
+    cameraId: str
+    partName: str | None = None
+    requiredQty: int | None = None
 
 
 # STATUS.detail 고정값 (DONE일 때 role/action별 권장 문구). 강제는 아니지만
