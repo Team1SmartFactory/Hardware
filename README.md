@@ -7,26 +7,27 @@
 
 ```
 [비전(YOLO) + 로봇 제어(ROS2)]  ──?──  [이 레포: mqtt_bridge]  ──MQTT──  [Team1SmartFactory/Backend]  ──REST/WS──  [Team1SmartFactory/Frontend]
-        기존 별도 저장소                    지금 여기, 스켈레톤 상태              계약: docs/COMMAND_SCHEMA.md
-        아직 연결 안 됨                     scripts/mock_*.py로 임시 대체 중
+  noeyod02/omx-beagle-smart-factory      _dispatch_* 구현 완료,               계약: docs/COMMAND_SCHEMA.md
+  실물 검증 전(ROS2_WIRING.md)          실물 ROS2 환경 검증 전               연결 배관은 라이브 검증 완료
 ```
 
-## 지금 상태 (2026-08-13 기준)
+## 지금 상태 (2026-08-21 기준)
 
-- **진짜 ROS2 연동은 아직 스켈레톤 단계** (`mqtt_bridge/`) — 커맨드 파싱·라우팅
-  배관은 동작하지만, 실제 ROS2 토픽/액션과의 연결은 전부 TODO.
-- **대신 `scripts/mock_robot.py` + `scripts/mock_vision.py`로 Backend와의 MQTT
+- **`_dispatch_*` 4개 구현 완료 (2026-08-21)**, `docs/ROS2_WIRING.md` 사양대로 —
+  단 실제 ROS2 환경/실물 로봇으로는 아직 검증 전(단위 테스트만 통과). 커맨드
+  파싱·라우팅·LWT·중복 멱등성·만료 검사 배관은 실제 브로커로 라이브 검증 완료.
+- **`scripts/mock_robot.py` + `scripts/mock_vision.py`로 Backend와의 MQTT
   왕복 전체를 실제로 검증 완료.** 로컬 Mosquitto + Backend + 두 mock 스크립트를
   같이 띄우고, `PUT /api/lines/{id}/stock`(관리자 수동 지정)으로 부족 이벤트를
   만들었더니 PICK_LOAD → MOVE_TO → UNLOAD_RESUME → MOVE_TO(복귀) 4단계가 전부
   mock 로봇 응답으로 끝까지 진행되고, 라인이 `restocking` → `normal`로 정확히
   복귀하는 것까지 확인함. 재고(`line/{id}/inventory`) 경로도 currentQty 갱신·
   이력 DB 적재·WS 브로드캐스트까지 정상 동작 확인. (자세한 건 "빠른 시작" 참고)
-- 즉 **연결 배관 자체는 증명됐고**, 남은 건 `mock_robot.py`/`mock_vision.py`를
-  실제 ROS2/YOLO로 바꿔치기하는 것뿐이다.
-- ⚠️ `line/{id}/inventory`는 mock으로 흘려보내도 currentQty만 갱신될 뿐, 임계치
-  이하로 떨어져도 승인 이벤트가 자동 생성되지는 않는다 — Backend에 그 로직
-  자체가 아직 없음(별도 gap, 이 레포 범위 밖).
+- INVENTORY 임계치 이하 감지 시 승인 대기 이벤트 자동 생성도 Backend 쪽에 구현·
+  라이브 검증 완료 — 관리자 수동 지정 없이도 부족 감지부터 로봇 4단계까지
+  전부 자동으로 도는 것까지 확인함.
+- 다음 단계는 ROS2 환경에서 실제 브리지 + 실물 로봇 스택으로 검증하는 것
+  (README "채워야 할 것" 참고).
 - 로봇 제어(ROS2)/비전(YOLO) 쪽 실제 코드는 이 레포에 없다 — 위치 **확인 완료
   (2026-08-20)**: `github.com/noeyod02/omx-beagle-smart-factory`의
   `open_manipulator_playground` 패키지다 (PC1 `/home/itec/open_manipulator`,
@@ -98,20 +99,27 @@ Hardware/
 
 ## 채워야 할 것 (우선순위 순)
 
-1. **`mqtt_bridge/topic_map.py`** — 정지우 팀장님 ROS2 쪽 실제 토픽/액션 이름으로
-   교체. 지금 들어있는 값(`/beagle_01/goal`, `/beagle_01/beagle_arrived`,
-   `/omxf_storage_01/arm_control` 등)은 전부 주간보고서에 언급된 노드 이름에서
-   유추한 추정값이다.
-2. **`mqtt_bridge/bridge_node.py`의 `_dispatch_*` 메서드 4개** — 각 메서드
-   안에 실제 ROS2 publish/action call을 넣고, 결과 콜백에서
-   `self._publish_done(command)` 또는 `self._publish_failed(command, ...)` 호출.
+1. ~~`mqtt_bridge/topic_map.py`~~ — **완료 (2026-08-21)**. `docs/ROS2_WIRING.md`
+   기준 실제 토픽으로 교체함 (팔은 raw Action이 아니라 스테이션 태스크 매니저의
+   transfer/state 토픽).
+2. ~~`mqtt_bridge/bridge_node.py`의 `_dispatch_*` 메서드 4개~~ — **완료
+   (2026-08-21)**, `docs/ROS2_WIRING.md` §3 사양대로 구현함. ⚠️ 단 **실제 ROS2
+   환경/실물 로봇으로는 아직 검증 전** — 단위 테스트(`test_topic_map.py`)와
+   문법 검사만 통과한 상태다. ROS2 환경에서 브리지 + 실물 스택을 띄우고
+   `mosquitto_pub`으로 커맨드 4종을 손으로 넣어 STATUS가 스키마대로 돌아오는지
+   확인하는 게 다음 단계(ROS2_WIRING.md §6 DoD 2번).
 3. **`line/{lineId}/inventory` 발행** — 지금은 `scripts/mock_vision.py`가 대신
-   흘려보내고 있음(임시). 비전(YOLO) 쪽이 직접 발행하거나 별도로 이 브리지에
-   합류시킬지 결정 필요 — 이 레포 범위 밖(§12 COMMAND_SCHEMA.md 참고).
-4. Backend 쪽에도 별도로 채워야 할 게 있음 — INVENTORY 수신 시 임계치 이하로
-   떨어지면 자동으로 `pending_approval` 이벤트를 만드는 로직이 아직 없음
-   (Backend 레포에 이슈 등록 예정, 이 레포 작업과는 별개).
-5. 위 1~2가 끝나면 `scripts/mock_robot.py`·`scripts/mock_vision.py`는 삭제.
+   흘려보내고 있음(임시). 로봇 저장소의 `stock_monitor_node`가 있긴 하지만 셀
+   재배치로 ROI가 플레이스홀더 상태라 카메라 캘리브레이션 전까지는 계속
+   mock으로 대체한다(ROS2_WIRING.md §5).
+4. 위 1~2 검증이 끝나면(Backend 붙여 mock 검증 시나리오 재현, `mock_robot.py`는
+   꺼둔 채로) `scripts/mock_robot.py` 삭제. `mock_vision.py`는 3번이 풀릴 때까지
+   유지.
+
+⚠️ **운영 규칙**: 대시보드 연동 모드에서는 로봇 저장소의 `/stock/refill_request`를
+아무도 발행하면 안 된다 — Backend orchestrator와 로봇 저장소의
+`stock_relay_node`가 같은 일을 해서, 지휘자가 둘이 되면 태스크 매니저에 transfer가
+겹쳐 들어가 한쪽이 죽는다(ROS2_WIRING.md §4).
 
 ## 개발 환경
 

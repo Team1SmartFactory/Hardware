@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import re  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 
 from mqtt_bridge.contracts import (  # noqa: E402
     Command,
@@ -23,6 +24,7 @@ from mqtt_bridge.contracts import (  # noqa: E402
     RobotState,
     Status,
     StatusPayload,
+    is_expired,
     now_iso,
 )
 
@@ -111,3 +113,48 @@ def test_inventory_serializes_to_contract_shape():
     # §10 개정: 예약 슬롯은 기본 null로 직렬화된다 (BE는 null이면 registry 값으로 대체)
     assert dumped["partName"] is None
     assert dumped["requiredQty"] is None
+
+
+def _make_command(timestamp: str, timeout_sec: int = 60) -> Command:
+    return Command(
+        timestamp=timestamp,
+        commandId="cmd-1",
+        robotId="beagle-01",
+        role=RobotRole.AMR,
+        action=CommandAction.MOVE_TO,
+        payload={"destination": "line-a"},
+        timeoutSec=timeout_sec,
+    )
+
+
+def test_is_expired_false_when_within_timeout():
+    """§6.1: 발행 후 timeoutSec 이내면 만료가 아니다."""
+    command = _make_command("2026-08-16T00:00:00.000Z", timeout_sec=60)
+    now = datetime(2026, 8, 16, 0, 0, 30, tzinfo=timezone.utc)  # 30초 후
+
+    assert is_expired(command, now=now) is False
+
+
+def test_is_expired_true_when_deadline_passed():
+    """§6.1: timestamp+timeoutSec을 지났으면 만료 — 실행하지 말고 즉시 FAILED."""
+    command = _make_command("2026-08-16T00:00:00.000Z", timeout_sec=60)
+    now = datetime(2026, 8, 16, 0, 1, 1, tzinfo=timezone.utc)  # 61초 후
+
+    assert is_expired(command, now=now) is True
+
+
+def test_is_expired_exactly_at_deadline_is_not_expired():
+    """마감시각과 정확히 같으면(초과 아님) 아직 만료가 아니다 — 경계값."""
+    command = _make_command("2026-08-16T00:00:00.000Z", timeout_sec=60)
+    now = datetime(2026, 8, 16, 0, 1, 0, tzinfo=timezone.utc)  # 정확히 60초 후
+
+    assert is_expired(command, now=now) is False
+
+
+def test_is_expired_returns_false_on_unparseable_timestamp():
+    """timestamp 형식이 깨졌으면 만료 판정을 포기하고 통과시킨다(보수적 선택) —
+    애초에 이 정도로 깨진 메시지는 Command 파싱 자체가 실패해 이 함수까지 안 온다."""
+    command = _make_command("2026-08-16T00:00:00.000Z")
+    command = command.model_copy(update={"timestamp": "not-a-timestamp"})
+
+    assert is_expired(command) is False
