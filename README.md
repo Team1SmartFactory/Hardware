@@ -51,7 +51,7 @@ uvicorn app.main:app --port 8000
 
 # 2. 이 레포에서 — 모의 로봇 + 모의 비전 동시 실행 (각각 별도 터미널)
 python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements-dev.txt
-python3 scripts/mock_robot.py
+python3 scripts/mock_robot.py --all   # --all: 실기 robotId까지 응답 (브리지 없이 단독 검증할 때만!)
 python3 scripts/mock_vision.py
 
 # 3. 부족 이벤트를 하나 만들어서 4단계 전부 도는지 확인
@@ -78,7 +78,7 @@ Hardware/
 │   └── COMMAND_SCHEMA.md          # MQTT 계약 (원본)
 ├── scripts/
 │   ├── setup_mosquitto.sh         # 데모 환경(우분투) MQTT 브로커 설치+설정+검증 (몇 번 돌려도 안전)
-│   ├── mock_robot.py              # 임시 mock — robot/+/cmd에 ACCEPTED->DONE으로 자동 응답 (rclpy 불필요)
+│   ├── mock_robot.py              # 시뮬 로봇(line-b~f) 응답기 — 기본값은 실기 robotId 무시, --all로 전체 응답 (rclpy 불필요)
 │   └── mock_vision.py             # 임시 mock — line/{id}/inventory 주기 발행 (rclpy 불필요)
 └── mqtt_bridge/                   # ROS2 ament_python 패키지 (진짜 브리지, 아직 스켈레톤)
     ├── package.xml / setup.py / setup.cfg
@@ -112,9 +112,10 @@ Hardware/
    흘려보내고 있음(임시). 로봇 저장소의 `stock_monitor_node`가 있긴 하지만 셀
    재배치로 ROI가 플레이스홀더 상태라 카메라 캘리브레이션 전까지는 계속
    mock으로 대체한다(ROS2_WIRING.md §5).
-4. 위 1~2 검증이 끝나면(Backend 붙여 mock 검증 시나리오 재현, `mock_robot.py`는
-   꺼둔 채로) `scripts/mock_robot.py` 삭제. `mock_vision.py`는 3번이 풀릴 때까지
-   유지.
+4. ~~`scripts/mock_robot.py` 삭제~~ → 시뮬 라인(line-b~f)의 가상 robotId 응답을
+   계속 맡아야 해서 삭제 대신 **실기 robotId 제외가 기본값**이 되도록 스코프를
+   줄였다(이슈 #15) — 이제 실기 브리지와 같이 띄워도 안전하다. `mock_vision.py`는
+   3번이 풀릴 때까지 유지.
 
 ⚠️ **운영 규칙**: 대시보드 연동 모드에서는 로봇 저장소의 `/stock/refill_request`를
 아무도 발행하면 안 된다 — Backend orchestrator와 로봇 저장소의
