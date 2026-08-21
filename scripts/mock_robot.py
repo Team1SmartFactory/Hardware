@@ -7,14 +7,17 @@
 연동으로 교체한다 (README "진짜 브리지 vs 임시 mock" 참고).
 
 동작: robot/+/cmd를 구독하다가 COMMAND를 받으면 ACCEPTED -> (지연) -> DONE
-STATUS를 그대로 돌려준다. robotId를 가리지 않고 아무 커맨드에나 응답하므로
-line-a~line-f 어느 라인의 로봇이든 그대로 동작한다.
+STATUS를 그대로 돌려준다.
 
-⚠️ 실기 연동 리허설 때는 실기 로봇 id의 커맨드에 응답하면 안 된다 —
-CONNECTION_PLAN.md Phase 4-19: mock은 시뮬 로봇 id 전용으로만 기동할 것.
+기본값으로 **실기 robotId(topic_map.ROBOT_TOPICS에 있는 것)는 무시**한다 —
+CONNECTION_PLAN.md Phase 4-19(mock은 시뮬 로봇 id 전용) 및 이슈 #15: 실기
+mqtt_bridge와 같이 띄워도 이중 응답이 나지 않아, 실기 라인(line-a)과 시뮬
+라인(line-b~f)을 동시에 살릴 수 있다. 실기 브리지 없이 mock만으로 전체 왕복을
+보고 싶을 때(README 빠른 시작)만 --all로 기존처럼 전부 응답하게 한다.
 
 실행:
-    python3 scripts/mock_robot.py
+    python3 scripts/mock_robot.py            # 시뮬 로봇만 응답 (실기 브리지와 동시 기동 안전)
+    python3 scripts/mock_robot.py --all      # 전부 응답 (브리지 없이 mock 단독 검증용)
     python3 scripts/mock_robot.py --host localhost --port 1883 --min-delay 1 --max-delay 3
 """
 
@@ -39,16 +42,23 @@ from mqtt_bridge.contracts import (  # noqa: E402
     now_iso,
 )
 from mqtt_bridge.mqtt_link import MqttLink  # noqa: E402
+from mqtt_bridge.topic_map import ROBOT_TOPICS  # noqa: E402
 
 _CMD_TOPIC_RE = re.compile(r"^robot/(?P<robot_id>[^/]+)/cmd$")
 
+# 실기 브리지(bridge_node.py)가 응답을 책임지는 robotId — 여기 응답하면 이중
+# 응답으로 로직이 꼬인다 (이슈 #15). --all일 때만 무시하고 전부 응답.
+REAL_ROBOT_IDS = frozenset(ROBOT_TOPICS)
+
 
 class MockRobot:
-    def __init__(self, host: str, port: int, min_delay: float, max_delay: float) -> None:
+    def __init__(self, host: str, port: int, min_delay: float, max_delay: float,
+                 answer_all: bool = False) -> None:
         self.link = MqttLink(host=host, port=port, client_id="mock-robot")
         self.link.on_message_callback = self._on_message
         self.min_delay = min_delay
         self.max_delay = max_delay
+        self.answer_all = answer_all
 
     def start(self) -> None:
         self.link.connect()
@@ -59,12 +69,16 @@ class MockRobot:
         if not self.link.is_connected:
             print(f"[mock-robot] 경고: {self.link.host}:{self.link.port} 연결 확인 안 됨 (계속 재시도 중)")
         self.link.subscribe("robot/+/cmd", qos=1)
-        print(f"[mock-robot] robot/+/cmd 구독 시작 (broker={self.link.host}:{self.link.port})")
+        scope = "전체 robotId 응답 (--all)" if self.answer_all else \
+            f"시뮬 로봇만 응답, 실기 제외: {sorted(REAL_ROBOT_IDS)}"
+        print(f"[mock-robot] robot/+/cmd 구독 시작 (broker={self.link.host}:{self.link.port}, {scope})")
 
     def _on_message(self, topic: str, payload: bytes) -> None:
         match = _CMD_TOPIC_RE.match(topic)
         if not match:
             return
+        if not self.answer_all and match.group("robot_id") in REAL_ROBOT_IDS:
+            return  # 실기 브리지 담당 — 응답하면 이중 응답 (이슈 #15)
 
         try:
             command = Command.model_validate_json(payload)
@@ -103,9 +117,11 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=1883)
     parser.add_argument("--min-delay", type=float, default=1.0, help="ACCEPTED -> DONE 사이 최소 지연(초)")
     parser.add_argument("--max-delay", type=float, default=3.0, help="ACCEPTED -> DONE 사이 최대 지연(초)")
+    parser.add_argument("--all", action="store_true",
+                        help="실기 robotId에도 응답 (실기 브리지 없이 mock 단독으로 왕복 검증할 때만)")
     args = parser.parse_args()
 
-    robot = MockRobot(args.host, args.port, args.min_delay, args.max_delay)
+    robot = MockRobot(args.host, args.port, args.min_delay, args.max_delay, answer_all=args.all)
     robot.start()
     try:
         while True:

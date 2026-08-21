@@ -146,9 +146,13 @@ Backend orchestrator의 PICK_LOAD→MOVE_TO→UNLOAD_RESUME→MOVE_TO 4단계는
    `mosquitto_pub`로 §6 커맨드 4종을 손으로 넣어 STATUS가 스키마대로 돌아옴.
 3. Backend 붙여 mock 검증 시나리오 재현(`PUT /api/lines/L1/stock` 부족 이벤트)
    — DoD: 실물 4단계가 끝까지 돌고 라인 상태가 `restocking`→`normal` 복귀.
-   이때 mock_robot.py는 반드시 꺼둘 것 (같은 커맨드에 둘이 응답하면 안 됨).
-4. `scripts/mock_robot.py` 삭제 (mock_vision.py는 §5 inventory 갭이 해소될
-   때까지 유지).
+   **완료(2026-08-21)**: 실물 5회 완주(1회 약 80 s), 커맨드 4종 STATUS 왕복 확인.
+4. ~~`scripts/mock_robot.py` 삭제~~ → **삭제 대신 스코프 축소로 변경(이슈 #15)**:
+   시뮬 라인(line-b~f)의 가상 robotId(omxf-*-02/03 등)는 계속 mock_robot이
+   응답해야 하므로 지울 수 없다. 대신 기본값으로 실기 robotId
+   (topic_map.ROBOT_TOPICS)를 무시하게 하여 실기 브리지와 동시 기동을 안전하게
+   만들었다 — 전부 응답하는 기존 동작은 `--all` 플래그로만.
+   (mock_vision.py는 §5 inventory 갭이 해소될 때까지 유지.)
 
 ## 7. 실행 배치 참고
 
