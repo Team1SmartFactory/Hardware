@@ -1,11 +1,14 @@
-"""robotId <-> 실제 ROS2 토픽/액션 매핑.
+"""robotId <-> 실제 ROS2 토픽 매핑. docs/ROS2_WIRING.md 기준 (2026-08-20 확정).
 
-이 파일이 이 레포에서 **가장 먼저 실제 값으로 채워야 하는 곳**이다. 여기 있는
-토픽/액션 이름은 확정값이 아니라, 주간 보고서에 언급된 노드 이름(bridge_node.py,
-arm_control.py, /beagle_arrived, /gripper_controller/gripper_cmd, stock_bridge.py)에서
-따온 추정값이다 — 실제 ROS2 쪽(정지우 팀장 작업물) 토픽/액션 이름이 확정되면
-아래 딕셔너리만 고치면 된다. bridge_node.py 본체는 이 파일을 통해서만 ROS2
-토픽 이름을 알아야 하고, 하드코딩하면 안 된다.
+실제 로봇 저장소: github.com/noeyod02/omx-beagle-smart-factory
+(open_manipulator_playground 패키지). 배선 근거·완료 판정 로직은 ROS2_WIRING.md 참고.
+
+⚠️ 팔(STORAGE_ARM/LINE_ARM)은 raw Action(FollowJointTrajectory)이 아니라 스테이션마다
+상주하는 stock_task_manager_node에 transfer/state 토픽(std_msgs/String, JSON)으로
+말을 건다 — 태스크 매니저가 티칭된 좌표·경유점·그리퍼 폭을 전부 알아서 처리한다.
+브리지가 관절을 직접 raw 액션으로 던지면 이 안전장치를 우회하게 되고, 같은
+컨트롤러에 커맨더가 둘이 되는 순간 goal끼리 서로 CANCELED로 죽인다(실사고 전력
+있음 — ROS2_WIRING.md §1). bridge_node.py도 이 이유로 Action Client를 안 쓴다.
 
 Team1SmartFactory/Backend의 config/registry.yaml과 robotId가 반드시 일치해야 한다
 (그래야 백엔드가 발행하는 robot/{robotId}/cmd를 브리지가 알아본다).
@@ -20,46 +23,69 @@ from .contracts import RobotRole
 
 @dataclass(frozen=True)
 class RobotTopics:
-    """로봇 하나에 대한 ROS2 쪽 연결 정보."""
+    """로봇 하나에 대한 ROS2 쪽 연결 정보. 전부 std_msgs/String(JSON 문자열)이다."""
 
     role: RobotRole
 
-    # AMR(Beagle) 전용 — MOVE_TO 커맨드를 받으면 이 토픽으로 목적지를 퍼블리시하고,
-    # 도착 이벤트는 arrival_topic으로 받는다.
-    # TODO: 실제 목적지 발행 토픽/메시지 타입 확정 (지금은 정지우 팀장 bridge_node.py의
-    # /beagle_arrived만 알려져 있고, "가라"는 명령을 어떤 토픽으로 주는지는 미확인)
-    goal_topic: str | None = None
-    arrival_topic: str | None = None  # 예상: "/beagle_arrived" (std_msgs/Bool 추정)
+    # 팔(STORAGE_ARM/LINE_ARM) 전용 — 태스크 매니저의 transfer/state 토픽.
+    #   발행(transfer): {"from": ..., "to": ..., "id": <commandId>}
+    #   구독(state): {"state": "idle"|"busy"|"blocked",
+    #                 "last_job": {"id": ..., "result": "ok"|"failed"|"rejected", "error": ...} | null}
+    transfer_topic: str | None = None
+    state_topic: str | None = None
 
-    # STORAGE_ARM / LINE_ARM(OMX-F) 전용 — 관절 포즈 이동은 Action Client로 한다고
-    # 보고서에 명시됨(arm_control.py). 액션 이름/타입은 확정 전까지 placeholder.
-    # TODO: 실제 Action 이름/타입 확정 (control_msgs/FollowJointTrajectory 추정)
-    arm_action: str | None = None
-    # 그리퍼 제어. 다음 주 계획에 명시된 액션 토픽.
-    gripper_action: str | None = None  # 예상: "/gripper_controller/gripper_cmd"
+    # AMR(Beagle) 전용
+    goal_topic: str | None = None  # 발행: 목표 스테이션 이름 문자열 (예: "station_a")
+    # 구독: {"state": ..., "station": ..., "ready_for_arm": bool, "detail": str | null}
+    beagle_state_topic: str | None = None
+    estop_topic: str | None = None  # ABORT 시 발행 (팔에는 대응하는 인터페이스가 없음)
 
 
 # robotId -> RobotTopics. Backend config/registry.yaml의 robotId와 반드시 맞출 것.
 ROBOT_TOPICS: dict[str, RobotTopics] = {
     "omxf-storage-01": RobotTopics(
         role=RobotRole.STORAGE_ARM,
-        arm_action="/omxf_storage_01/arm_control",  # TODO placeholder
-        gripper_action="/omxf_storage_01/gripper_controller/gripper_cmd",  # TODO placeholder
+        transfer_topic="/station_a/stock/transfer",
+        state_topic="/station_a/stock/task_state",
     ),
     "beagle-01": RobotTopics(
         role=RobotRole.AMR,
-        goal_topic="/beagle_01/goal",  # TODO placeholder
-        arrival_topic="/beagle_01/beagle_arrived",  # TODO placeholder
+        goal_topic="/beagle/goto",
+        beagle_state_topic="/beagle/state",
+        estop_topic="/beagle/estop",
     ),
     "omxf-line-01": RobotTopics(
         role=RobotRole.LINE_ARM,
-        arm_action="/omxf_line_01/arm_control",  # TODO placeholder
-        gripper_action="/omxf_line_01/gripper_controller/gripper_cmd",  # TODO placeholder
+        transfer_topic="/station_b/stock/transfer",
+        state_topic="/station_b/stock/task_state",
     ),
-    # line-b~line-f(시뮬레이션 로봇: omxf-storage-02~06, beagle-02~06, omxf-line-02~06)는
-    # ROS2 실물 노드가 없으므로 이 맵에 넣지 않는다 — bridge_node가 매핑 없는
-    # robotId의 커맨드는 무시하고 경고만 남긴다 (실기는 line-a 한 라인만 연결).
-    # 시뮬 로봇 응답은 scripts/mock_robot.py가 담당한다 (CONNECTION_PLAN.md Phase 4-19).
+    # omxf-line-02(PC2, station_c 담당)는 티칭·레이아웃이 아직 안 끝나서 태스크
+    # 매니저가 없다 — 실물 노드가 뜨면 이 맵에 추가한다(ROS2_WIRING.md §2). 이 맵에
+    # 없는 robotId의 커맨드는 bridge_node가 무시하고 경고만 남긴다 — line-b~line-f는
+    # 그래서 지금 전부 mock_robot.py/mock_vision.py의 시뮬레이션 응답으로 대체된다.
+}
+
+# MOVE_TO의 destination -> 실제 비글 스테이션 이름. Backend는 "STORAGE" 또는 라인
+# id(line-a~f)를 보내는데, 물리 베이는 station_a(보관소)/station_b(라인) 둘뿐이라
+# 어느 라인이든 station_b로 간다(ROS2_WIRING.md §3 MOVE_TO 절).
+DESTINATION_TO_STATION: dict[str, str] = {
+    "STORAGE": "station_a",
+    "line-a": "station_b",
+    "line-b": "station_b",
+    "line-c": "station_b",
+    "line-d": "station_b",
+    "line-e": "station_b",
+    "line-f": "station_b",
+}
+
+# UNLOAD_RESUME의 payload.lineId -> 실물 칸(bin). 물리 칸이 4개(bin_a~d)뿐이라
+# line-e/line-f는 지원 대상에서 뺐다 — 이 두 라인은 당분간 mock 데이터로 유지
+# (2026-08-21 확정, ROS2_WIRING.md §3 UNLOAD_RESUME 절의 제안을 그대로 채택).
+LINE_TO_BIN: dict[str, str] = {
+    "line-a": "bin_a",
+    "line-b": "bin_b",
+    "line-c": "bin_c",
+    "line-d": "bin_d",
 }
 
 
