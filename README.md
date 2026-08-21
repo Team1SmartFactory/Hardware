@@ -27,11 +27,12 @@
 - ⚠️ `line/{id}/inventory`는 mock으로 흘려보내도 currentQty만 갱신될 뿐, 임계치
   이하로 떨어져도 승인 이벤트가 자동 생성되지는 않는다 — Backend에 그 로직
   자체가 아직 없음(별도 gap, 이 레포 범위 밖).
-- 로봇 제어(ROS2)/비전(YOLO) 쪽 실제 코드는 이 레포에 없다. 원래 참고하려던
-  저장소 URL(`jisooohh/SmartFactoryStockControl`)이 현재 `Team1SmartFactory/Frontend`로
-  리다이렉트되는 걸 확인함 — **정지우 팀장님께 YOLO/ROS2 코드의 실제 현재 위치를
-  확인 필요.** 확인되면 이 README와 `mqtt_bridge/mqtt_bridge/topic_map.py`를
-  갱신할 것.
+- 로봇 제어(ROS2)/비전(YOLO) 쪽 실제 코드는 이 레포에 없다 — 위치 **확인 완료
+  (2026-08-20)**: `github.com/noeyod02/omx-beagle-smart-factory`의
+  `open_manipulator_playground` 패키지다 (PC1 `/home/itec/open_manipulator`,
+  PC2 `~/ros2_ws/src/open_manipulator`). 실제 토픽/노드 기준의 배선 계획은
+  **[`docs/ROS2_WIRING.md`](docs/ROS2_WIRING.md)** 로 정리했다 — topic_map.py의
+  추정값(raw 액션 직접 호출)은 그 문서대로 태스크 매니저 계층으로 바꿔야 한다.
 
 ## 빠른 시작 — mock으로 Backend 연결 왕복 검증
 
@@ -136,4 +137,4 @@ ros2 launch mqtt_bridge bridge.launch.py mqtt_host:=localhost mqtt_port:=1883
 |---|---|
 | [Team1SmartFactory/Backend](https://github.com/Team1SmartFactory/Backend) | FastAPI 대시보드 백엔드. MQTT 계약의 "다른 쪽 끝" |
 | [Team1SmartFactory/Frontend](https://github.com/Team1SmartFactory/Frontend) | 대시보드 화면 |
-| 로봇 제어(ROS2)/비전(YOLO) | 저장소 위치 확인 중 (위 "지금 상태" 참고) |
+| [noeyod02/omx-beagle-smart-factory](https://github.com/noeyod02/omx-beagle-smart-factory) | 로봇 제어(ROS2)/비전(YOLO). 배선 계획: [docs/ROS2_WIRING.md](docs/ROS2_WIRING.md) |
