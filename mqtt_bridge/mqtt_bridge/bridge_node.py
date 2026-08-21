@@ -33,7 +33,7 @@ from functools import partial
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from .contracts import (
     Command,
@@ -123,7 +123,9 @@ class BridgeNode(Node):
                     String, topics.beagle_state_topic, partial(self._on_beagle_state, robot_id), 10
                 )
             if topics.estop_topic:
-                self._estop_pubs[robot_id] = self.create_publisher(String, topics.estop_topic, 10)
+                # 다른 토픽과 달리 estop만 std_msgs/Bool이다(실물 beagle_bridge_node의
+                # 구독 타입) — String으로 발행하면 타입 불일치로 조용히 버려진다(#13).
+                self._estop_pubs[robot_id] = self.create_publisher(Bool, topics.estop_topic, 10)
 
         self.get_logger().info(f"MQTT 브리지 시작 (broker={host}:{port}, 관리 로봇: {self._managed_robot_ids})")
 
@@ -261,7 +263,7 @@ class BridgeNode(Node):
         if publisher is None:
             self._publish_failed(command, ErrorCode.UNSUPPORTED.value, "no abort interface for this robot")
             return
-        publisher.publish(String(data="stop"))
+        publisher.publish(Bool(data=True))  # 래치됨 — 해제(data=False)는 현 계약에 없음
         self._publish_done(command)
 
     def _go_to_station(self, command: Command, target_station: str) -> None:
@@ -330,9 +332,17 @@ class BridgeNode(Node):
         if command is None or command.action not in (CommandAction.MOVE_TO, CommandAction.HOME):
             return
 
-        detail = state.get("detail")
-        if detail:
-            self._publish_failed(command, ErrorCode.HARDWARE.value, detail)
+        # detail은 에러 전용 필드가 아니다 — 주행 중에는 루트 키('station_a->station_b'),
+        # nudge 중에는 'nudge +0.050 m'가 채워진다. detail 유무로 판정하면 출발하는
+        # 순간 FAILED로 오판한다(#13). 에러는 state가 error/estop일 때뿐이고, 그때
+        # detail이 사유 문자열이다.
+        beagle_state = state.get("state")
+        if beagle_state in ("error", "estop"):
+            self._publish_failed(
+                command,
+                ErrorCode.HARDWARE.value,
+                state.get("detail") or f"beagle state={beagle_state}",
+            )
             self._pending_station.pop(robot_id, None)
             return
 

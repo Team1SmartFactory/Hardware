@@ -46,7 +46,8 @@ class RobotTopics:
 | `omxf-line-01` | transfer `/station_b/stock/transfer`, state `/station_b/stock/task_state` | 라인 팔 (PC1), 셀 `bin_a`/`bin_b` 담당 |
 | (예정) `omxf-line-02` | transfer `/station_c/stock/transfer`, state `/station_c/stock/task_state` | PC2의 세 번째 팔, 셀 `bin_c`/`bin_d`. 티칭·레이아웃 미완이라 아직 태스크 매니저 없음 |
 
-모든 토픽 타입은 `std_msgs/String`(JSON 문자열)이다. ROS2 환경은 도메인 0,
+토픽 타입은 `/beagle/estop`만 `std_msgs/Bool`이고 나머지는 전부
+`std_msgs/String`(JSON 문자열)이다. ROS2 환경은 도메인 0,
 기본 rmw(fastrtps) — PC1/PC2 크로스머신 통신은 검증돼 있고, 브리지는 PC1
 호스트에서 돌리면 된다 (⚠️ 컨테이너 안에서 돌리면 RMW_IMPLEMENTATION=zenoh /
 ROS_DOMAIN_ID=30 기본값 때문에 아무것도 안 보인다 — 컨테이너에서 돌려야 한다면
@@ -83,7 +84,9 @@ destination 매핑이 필요하다: Backend는 `"L1"`/`"line-a"`류의 라인 id
 
 완료 판정: `/beagle/state`(0.5s 주기 JSON)에서 `station == 목표` **그리고**
 `ready_for_arm: true`가 되는 순간 DONE(`ARRIVED`). 발행 시점에 이미 목표
-스테이션이면 즉시 DONE. `detail`에 에러 문자열이 차 있으면 FAILED.
+스테이션이면 즉시 DONE. 실패는 **`state`가 `error`/`estop`일 때**이고 그때
+`detail`이 사유 문자열이다 — `detail` 유무로 판정하면 안 된다: 주행 중에도
+`detail`에 루트 키(`station_a->station_b`)가 채워진다(#13에서 정정).
 
 ### UNLOAD_RESUME (LINE_ARM)
 
@@ -106,7 +109,9 @@ line-e/f→미지원(FAILED UNSUPPORTED)`을 제안한다. Backend registry.yaml
 
 ### ABORT
 
-비글: `/beagle/estop` 발행. 팔: 태스크 매니저에 중단 인터페이스가 없다 —
+비글: `/beagle/estop`에 **`std_msgs/Bool` `data: true`** 발행(다른 토픽과 달리
+String이 아니다 — #13에서 정정). 래치라 해제는 `data: false`인데 해제 커맨드는
+현 계약에 없음(phase 2). 팔: 태스크 매니저에 중단 인터페이스가 없다 —
 정직하게 **FAILED(UNSUPPORTED)** 로 응답한다. (추가하려면 로봇 저장소 쪽
 task manager에 abort 토픽을 넣는 작업이 선행돼야 함 — phase 2.)
 
