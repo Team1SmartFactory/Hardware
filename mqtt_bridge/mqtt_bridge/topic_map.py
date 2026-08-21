@@ -23,7 +23,11 @@ from .contracts import RobotRole
 
 @dataclass(frozen=True)
 class RobotTopics:
-    """로봇 하나에 대한 ROS2 쪽 연결 정보. 전부 std_msgs/String(JSON 문자열)이다."""
+    """로봇 하나에 대한 ROS2 쪽 연결 정보.
+
+    estop_topic만 std_msgs/Bool(data=true로 래치)이고 나머지는 전부
+    std_msgs/String(JSON 문자열)이다 — 실물 beagle_bridge_node의 구독 타입 기준(#13).
+    """
 
     role: RobotRole
 
@@ -38,7 +42,8 @@ class RobotTopics:
     goal_topic: str | None = None  # 발행: 목표 스테이션 이름 문자열 (예: "station_a")
     # 구독: {"state": ..., "station": ..., "ready_for_arm": bool, "detail": str | null}
     beagle_state_topic: str | None = None
-    estop_topic: str | None = None  # ABORT 시 발행 (팔에는 대응하는 인터페이스가 없음)
+    # ABORT 시 발행 (팔에는 대응하는 인터페이스가 없음). ⚠️ 타입이 std_msgs/Bool.
+    estop_topic: str | None = None
 
 
 # robotId -> RobotTopics. Backend config/registry.yaml의 robotId와 반드시 맞출 것.
