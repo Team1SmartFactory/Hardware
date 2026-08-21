@@ -3,14 +3,21 @@
 역할: Backend(Team1SmartFactory/Backend)가 robot/{robotId}/cmd로 발행하는 커맨드를
 받아 ROS2 쪽(로봇 제어)으로 넘기고, ROS2 쪽 결과를 robot/{robotId}/status ·
 /telemetry · bridge/online MQTT 토픽으로 되돌려 보낸다. 계약은 docs/COMMAND_SCHEMA.md
-(v2, CONNECTION_PLAN.md Phase 2 반영).
+(v2, CONNECTION_PLAN.md Phase 2 반영). 실제 로봇 연동 사양은 docs/ROS2_WIRING.md
+(로봇 제어 쪽에서 확정, 2026-08-20).
 
-⚠️ 지금은 스켈레톤이다. MQTT 송수신 배관 + 커맨드 라우팅 + 방어 규약(LWT, 중복
-멱등성, 만료 검사)까지는 동작하지만, 실제 ROS2 토픽/액션과의 연결(각 _dispatch_*
-메서드 안)은 비어 있다 — 그래서 지금 이 노드를 그대로 띄워도 STATUS(DONE/FAILED)가
-안 나가서 백엔드 쪽은 액션별 타임아웃(60~120초) 뒤에 실패 처리된다. topic_map.py에
-실제 ROS2 토픽/액션 이름을 채우고, 아래 TODO 표시된 곳을 구현해야 실제로 로봇이
-움직인다.
+ROS2 쪽 실제 인터페이스는 raw Action이 아니라 스테이션마다 상주하는
+stock_task_manager_node에 transfer/state 토픽(std_msgs/String, JSON)으로 말을
+거는 구조다(ROS2_WIRING.md §1) — 태스크 매니저가 안전장치(경유점·후퇴 고도·충돌
+회피)를 전부 갖고 있어서, 브리지가 관절을 직접 던지면 그 안전장치를 우회하게
+된다. topic_map.py에 로봇별 실제 토픽이 채워져 있으니 여기서는 하드코딩하지
+않는다.
+
+⚠️ 오케스트레이터 충돌 주의(ROS2_WIRING.md §4): 대시보드 연동 모드에서는 로봇
+저장소의 `/stock/refill_request`를 아무도 발행하면 안 된다 — Backend orchestrator의
+PICK_LOAD→MOVE_TO→UNLOAD_RESUME→MOVE_TO 4단계와 로봇 저장소의 stock_relay_node가
+같은 일을 해서, 지휘자가 둘이 되면 같은 태스크 매니저에 transfer가 겹쳐 들어가
+한쪽이 rejected로 죽는다.
 
 실행 (ROS2 환경에서):
     ros2 run mqtt_bridge bridge_node
@@ -19,11 +26,14 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
+from functools import partial
 
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import String
 
 from .contracts import (
     Command,
@@ -31,6 +41,7 @@ from .contracts import (
     DONE_DETAIL_BY_ACTION,
     ErrorCode,
     ErrorDetail,
+    RobotRole,
     RobotState,
     Status,
     StatusPayload,
@@ -38,9 +49,12 @@ from .contracts import (
     now_iso,
 )
 from .mqtt_link import MqttLink
-from .topic_map import ROBOT_TOPICS, RobotTopics, get_topics
+from .topic_map import DESTINATION_TO_STATION, LINE_TO_BIN, ROBOT_TOPICS, RobotTopics, get_topics
 
 _CMD_TOPIC_RE = re.compile(r"^robot/(?P<robot_id>[^/]+)/cmd$")
+
+# ROS2_WIRING.md §3 HOME 절: 비글의 HOME은 "STORAGE로 가는 MOVE_TO"와 동일하게 처리.
+_HOME_DESTINATION = "STORAGE"
 
 
 class BridgeNode(Node):
@@ -54,13 +68,25 @@ class BridgeNode(Node):
 
         self._managed_robot_ids = list(ROBOT_TOPICS)
 
-        # robotId -> 그 로봇에 마지막으로 전달된 Command. ROS2 콜백(도착 이벤트,
-        # 액션 결과 등)이 비동기로 도착했을 때 "이게 어떤 커맨드에 대한 응답인지"
-        # 되짚어보는 용도. 커맨드 하나 끝나면 지운다.
+        # robotId -> 그 로봇에 마지막으로 전달된 Command. ROS2 콜백(태스크 매니저
+        # state, 비글 state)이 비동기로 도착했을 때 "이게 어떤 커맨드에 대한
+        # 응답인지" 되짚어보는 용도. 커맨드 하나 끝나면 지운다.
         self._pending: dict[str, Command] = {}
         # robotId -> 마지막으로 처리한 commandId. QoS 1 중복 배달 시 재실행을 막는다
         # (COMMAND_SCHEMA.md §6.1).
         self._last_command_id: dict[str, str] = {}
+        # robotId -> MOVE_TO/HOME으로 목표한 스테이션. _on_beagle_state에서 도착
+        # 판정할 때 이 값과 비교한다.
+        self._pending_station: dict[str, str] = {}
+        # robotId -> 가장 최근 관측한 task_state/beagle state (JSON dict). HOME의
+        # idle 판정, MOVE_TO/HOME의 "이미 도착해 있으면 즉시 DONE" 판정에 쓴다.
+        self._arm_last_state: dict[str, dict] = {}
+        self._beagle_last_state: dict[str, dict] = {}
+
+        # robotId -> rclpy Publisher. topic_map.py에 정의된 로봇만 채워진다.
+        self._transfer_pubs: dict[str, object] = {}
+        self._goal_pubs: dict[str, object] = {}
+        self._estop_pubs: dict[str, object] = {}
 
         self._mqtt = MqttLink(host=host, port=port, client_id="hardware-bridge")
         self._mqtt.on_message_callback = self._on_mqtt_message
@@ -81,21 +107,23 @@ class BridgeNode(Node):
         self._mqtt.subscribe("robot/+/cmd", qos=1)
         self._publish_bridge_online()
 
-        # TODO: 여기서 topic_map.ROBOT_TOPICS를 순회하며 실제 ROS2 subscription/
-        # action client를 만들어야 한다. 지금은 골격만 있다 — 예시:
-        #
-        #   for robot_id, topics in ROBOT_TOPICS.items():
-        #       if topics.arrival_topic:
-        #           self.create_subscription(
-        #               Bool,  # 실제 메시지 타입 확인 필요 (std_msgs/Bool 추정)
-        #               topics.arrival_topic,
-        #               lambda msg, rid=robot_id: self._on_arrival(rid, msg),
-        #               10,
-        #           )
-        #       if topics.arm_action:
-        #           self._arm_clients[robot_id] = ActionClient(
-        #               self, FollowJointTrajectory, topics.arm_action  # 실제 액션 타입 확인 필요
-        #           )
+        # ROS2 쪽 — 스테이션 태스크 매니저 / 비글의 발행·구독을 전부 topic_map.py
+        # 기준으로만 연다(하드코딩 금지, ROS2_WIRING.md §2).
+        for robot_id, topics in ROBOT_TOPICS.items():
+            if topics.transfer_topic:
+                self._transfer_pubs[robot_id] = self.create_publisher(String, topics.transfer_topic, 10)
+            if topics.state_topic:
+                self.create_subscription(
+                    String, topics.state_topic, partial(self._on_arm_state, robot_id), 10
+                )
+            if topics.goal_topic:
+                self._goal_pubs[robot_id] = self.create_publisher(String, topics.goal_topic, 10)
+            if topics.beagle_state_topic:
+                self.create_subscription(
+                    String, topics.beagle_state_topic, partial(self._on_beagle_state, robot_id), 10
+                )
+            if topics.estop_topic:
+                self._estop_pubs[robot_id] = self.create_publisher(String, topics.estop_topic, 10)
 
         self.get_logger().info(f"MQTT 브리지 시작 (broker={host}:{port}, 관리 로봇: {self._managed_robot_ids})")
 
@@ -153,7 +181,7 @@ class BridgeNode(Node):
         self._dispatch(command, topics)
 
     def _dispatch(self, command: Command, topics: RobotTopics) -> None:
-        """action별로 실제 ROS2 쪽에 전달한다. 지금은 전부 TODO."""
+        """action별로 실제 ROS2 쪽에 전달한다."""
         if command.action in (CommandAction.PICK_LOAD, CommandAction.UNLOAD_RESUME):
             self._dispatch_arm(command, topics)
         elif command.action == CommandAction.MOVE_TO:
@@ -164,41 +192,160 @@ class BridgeNode(Node):
             self._dispatch_abort(command, topics)
 
     def _dispatch_arm(self, command: Command, topics: RobotTopics) -> None:
-        """PICK_LOAD / UNLOAD_RESUME. payload: {partId, qty, lineId}.
-
-        TODO: topics.arm_action으로 Action Client goal 전송, 결과 콜백에서
-        self._publish_status(command, RobotState.DONE 또는 FAILED, ...) 호출.
-        그리퍼가 필요하면(topics.gripper_action) 집기/놓기 액션을 arm 이동 전후로 추가.
+        """PICK_LOAD / UNLOAD_RESUME. 스테이션 태스크 매니저에 transfer 요청 하나를
+        보낸다 — 집기/놓기·경유점·그리퍼는 전부 태스크 매니저가 알아서 한다
+        (ROS2_WIRING.md §1, §3). 완료 판정은 여기서 하지 않고 _on_arm_state가
+        last_job.id == commandId를 보고 DONE/FAILED를 올린다.
         """
-        self.get_logger().warning(
-            f"[TODO] arm_action 미구현 — {command.robotId} {command.action.value} 무시됨 "
-            f"(payload={command.payload})"
-        )
+        publisher = self._transfer_pubs.get(command.robotId)
+        if publisher is None:
+            self.get_logger().warning(f"{command.robotId}: transfer_topic 미설정 — FAILED")
+            self._publish_failed(command, ErrorCode.UNSUPPORTED.value, "transfer_topic not configured")
+            return
+
+        if command.action == CommandAction.PICK_LOAD:
+            from_slot, to_slot = "warehouse", "carrier"
+        else:  # UNLOAD_RESUME
+            line_id = command.payload.get("lineId")
+            bin_id = LINE_TO_BIN.get(line_id)
+            if bin_id is None:
+                # 물리 칸이 4개(bin_a~d)뿐이라 line-e/line-f는 실물 로봇 지원 대상이
+                # 아니다(2026-08-21 확정) — 정직하게 실패시키고 mock 데이터로 대체.
+                self.get_logger().warning(
+                    f"{command.robotId}: UNLOAD_RESUME lineId={line_id!r}에 대응하는 실물 칸 없음 — FAILED"
+                )
+                self._publish_failed(command, ErrorCode.UNSUPPORTED.value, f"no physical bin for lineId={line_id}")
+                return
+            from_slot, to_slot = "carrier", bin_id
+
+        payload = {"from": from_slot, "to": to_slot, "id": command.commandId}
+        publisher.publish(String(data=json.dumps(payload)))
 
     def _dispatch_move(self, command: Command, topics: RobotTopics) -> None:
-        """MOVE_TO. payload: {destination}. 목적지 발행 + arrival_topic 콜백에서 DONE.
-
-        TODO: topics.goal_topic으로 목적지 퍼블리시. arrival_topic 구독 콜백
-        (__init__ 참고)에서 self._pending[robotId]가 아직 이 command면 DONE 발행.
+        """MOVE_TO. payload: {destination}. destination을 실제 스테이션 이름으로
+        바꿔 비글에 목표를 발행한다 — 도착 판정은 _on_beagle_state에 맡긴다.
         """
-        self.get_logger().warning(
-            f"[TODO] goal_topic 미구현 — {command.robotId} MOVE_TO "
-            f"{command.payload.get('destination')} 무시됨"
-        )
+        destination = command.payload.get("destination")
+        target_station = DESTINATION_TO_STATION.get(destination)
+        if target_station is None:
+            self.get_logger().warning(f"{command.robotId}: MOVE_TO destination={destination!r} 매핑 없음 — FAILED")
+            self._publish_failed(
+                command, ErrorCode.UNSUPPORTED.value, f"no station mapping for destination={destination}"
+            )
+            return
+        self._go_to_station(command, target_station)
 
     def _dispatch_home(self, command: Command, topics: RobotTopics) -> None:
-        """TODO: HOME은 대개 MOVE_TO의 특수 케이스(destination='STORAGE' 등)이거나
-        별도 사전 정의된 포즈로 이동. 로봇 종류에 맞게 구현."""
-        self.get_logger().warning(f"[TODO] HOME 미구현 — {command.robotId} 무시됨")
+        """팔은 모든 transfer의 마지막 스텝이 home 복귀라 별도 동작 없이 바로
+        응답한다 — idle이면 DONE, 아니면 FAILED(BUSY). 비글은 STORAGE로 가는
+        MOVE_TO와 동일하게 처리한다(ROS2_WIRING.md §3 HOME 절)."""
+        if topics.role == RobotRole.AMR:
+            target_station = DESTINATION_TO_STATION[_HOME_DESTINATION]
+            self._go_to_station(command, target_station)
+            return
+
+        last_state = self._arm_last_state.get(command.robotId) or {}
+        # 아직 state를 한 번도 못 받았으면 idle로 간주한다 — 커맨드가 오기 전이면
+        # 대개 대기 중이었을 가능성이 높다(보수적으로 실패시키는 것보다 낫다).
+        state = last_state.get("state", "idle")
+        if state == "idle":
+            self._publish_done(command)
+        else:
+            self._publish_failed(command, ErrorCode.BUSY.value, f"arm state={state}, not idle")
 
     def _dispatch_abort(self, command: Command, topics: RobotTopics) -> None:
-        """TODO: 진행 중인 Action Client goal이 있으면 cancel_goal_async() 호출,
-        AMR이면 즉시 정지 토픽 발행 등. 실패해도 예외 던지지 말 것 —
-        이미 끝난 작업에 ABORT가 늦게 와도 무시하면 그만이다."""
-        self.get_logger().warning(f"[TODO] ABORT 미구현 — {command.robotId} 무시됨")
+        """비글: /beagle/estop 발행 후 즉시 DONE. 팔: 태스크 매니저에 중단
+        인터페이스가 없어 정직하게 FAILED(UNSUPPORTED)로 응답한다
+        (ROS2_WIRING.md §3 ABORT 절)."""
+        publisher = self._estop_pubs.get(command.robotId)
+        if publisher is None:
+            self._publish_failed(command, ErrorCode.UNSUPPORTED.value, "no abort interface for this robot")
+            return
+        publisher.publish(String(data="stop"))
+        self._publish_done(command)
+
+    def _go_to_station(self, command: Command, target_station: str) -> None:
+        """비글에게 target_station으로 가라고 지시한다. 최근 관측한 상태로 봤을 때
+        이미 그 스테이션에 도착해 있으면(ready_for_arm까지 참) 새로 움직이지 않고
+        즉시 DONE — MOVE_TO/HOME 둘 다 이 경로를 공유한다."""
+        last_state = self._beagle_last_state.get(command.robotId)
+        if last_state and last_state.get("station") == target_station and last_state.get("ready_for_arm"):
+            self._publish_done(command)
+            return
+
+        publisher = self._goal_pubs.get(command.robotId)
+        if publisher is None:
+            self._publish_failed(command, ErrorCode.UNSUPPORTED.value, "goal_topic not configured")
+            return
+        self._pending_station[command.robotId] = target_station
+        publisher.publish(String(data=target_station))
 
     # ------------------------------------------------------------------
-    # ROS2 -> MQTT
+    # ROS2 -> MQTT (팔/비글 state 구독 콜백)
+    # ------------------------------------------------------------------
+
+    def _on_arm_state(self, robot_id: str, msg: String) -> None:
+        """스테이션 태스크 매니저의 task_state 구독 콜백. §3 PICK_LOAD/UNLOAD_RESUME
+        완료 판정: state가 busy인 동안 RUNNING, last_job.id가 대기 중인 commandId와
+        일치하면 result에 따라 DONE/FAILED."""
+        try:
+            state = json.loads(msg.data)
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warning(f"{robot_id}: task_state JSON 파싱 실패, 무시: {msg.data!r}")
+            return
+        self._arm_last_state[robot_id] = state
+
+        command = self._pending.get(robot_id)
+        if command is None or command.action not in (CommandAction.PICK_LOAD, CommandAction.UNLOAD_RESUME):
+            return  # HOME 판정용으로만 쓰거나, 대기 중인 커맨드가 없으면 상태만 기록
+
+        if state.get("state") == "busy":
+            self._publish_status(command, RobotState.RUNNING, detail="BUSY")
+            return
+
+        last_job = state.get("last_job")
+        if not last_job or last_job.get("id") != command.commandId:
+            return  # 다른 커맨드의 결과이거나 아직 안 끝남
+
+        if last_job.get("result") == "ok":
+            self._publish_done(command)
+        else:
+            # blocked(예: 보관소 재고 소진 "the warehouse is empty")도 여기로 온다 —
+            # 태스크 매니저가 last_job.result를 failed/rejected로 채워서 준다
+            # (ROS2_WIRING.md §3 PICK_LOAD 절).
+            self._publish_failed(command, ErrorCode.HARDWARE.value, last_job.get("error") or "task failed")
+
+    def _on_beagle_state(self, robot_id: str, msg: String) -> None:
+        """비글 state 구독 콜백(0.5s 주기). §3 MOVE_TO/HOME 완료 판정: station이
+        목표와 같고 ready_for_arm이 참이면 DONE, detail에 에러 문자열이 있으면
+        FAILED."""
+        try:
+            state = json.loads(msg.data)
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warning(f"{robot_id}: beagle state JSON 파싱 실패, 무시: {msg.data!r}")
+            return
+        self._beagle_last_state[robot_id] = state
+
+        command = self._pending.get(robot_id)
+        if command is None or command.action not in (CommandAction.MOVE_TO, CommandAction.HOME):
+            return
+
+        detail = state.get("detail")
+        if detail:
+            self._publish_failed(command, ErrorCode.HARDWARE.value, detail)
+            self._pending_station.pop(robot_id, None)
+            return
+
+        target = self._pending_station.get(robot_id)
+        if target is not None and state.get("station") == target and state.get("ready_for_arm"):
+            self._publish_done(command)
+            self._pending_station.pop(robot_id, None)
+            return
+
+        self._publish_status(command, RobotState.RUNNING, detail="MOVING")
+
+    # ------------------------------------------------------------------
+    # ROS2 -> MQTT (커맨드 상태 발행)
     # ------------------------------------------------------------------
 
     def _publish_status(
@@ -222,7 +369,7 @@ class BridgeNode(Node):
             self._pending.pop(command.robotId, None)
 
     def _publish_done(self, command: Command) -> None:
-        """dispatch 콜백 안에서 성공적으로 끝났을 때 호출할 헬퍼."""
+        """dispatch/state 콜백 안에서 성공적으로 끝났을 때 호출할 헬퍼."""
         self._publish_status(command, RobotState.DONE, detail=DONE_DETAIL_BY_ACTION.get(command.action))
 
     def _publish_failed(self, command: Command, code: str, message: str) -> None:
