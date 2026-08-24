@@ -51,24 +51,25 @@ def test_beagle_has_goal_state_and_estop_topics():
     assert topics.estop_topic == "/beagle/estop"
 
 
-def test_destination_to_station_maps_storage_and_all_lines():
-    """ROS2_WIRING.md §3 MOVE_TO: STORAGE->station_a, 어느 라인이든 station_b."""
-    assert DESTINATION_TO_STATION["STORAGE"] == "station_a"
-    for line_id in ("line-a", "line-b", "line-c", "line-d", "line-e", "line-f"):
-        assert DESTINATION_TO_STATION[line_id] == "station_b"
-
-
-def test_line_to_bin_only_covers_physical_bins():
-    """물리 칸은 bin_a~d 4개뿐 — line-e/line-f는 2026-08-21 확정대로 매핑에서 뺐다
-    (bridge_node가 이걸 보고 UNSUPPORTED로 실패시켜야 한다)."""
-    assert LINE_TO_BIN == {
-        "line-a": "bin_a",
-        "line-b": "bin_b",
-        "line-c": "bin_c",
-        "line-d": "bin_d",
+def test_destination_to_station_covers_only_line_a():
+    """이슈 #17: line-a만 실물로 쓰기로 확정 — registry.yaml이 line-b~f를 가상
+    robotId로 라우팅해서 이 브리지엔 애초에 도달하지 않는다. 여기 없는
+    destination은 UNSUPPORTED로 명시적으로 거부돼야 한다(조용히 받으면 안 됨)."""
+    assert DESTINATION_TO_STATION == {
+        "STORAGE": "station_a",
+        "line-a": "station_b",
     }
-    assert "line-e" not in LINE_TO_BIN
-    assert "line-f" not in LINE_TO_BIN
+    for line_id in ("line-b", "line-c", "line-d", "line-e", "line-f"):
+        assert line_id not in DESTINATION_TO_STATION
+
+
+def test_line_to_bin_covers_only_line_a():
+    """이슈 #17: line-a만 실물로 쓰기로 확정. bin_b는 station_b의 같은 팔이
+    물리적으로 닿을 수 있는 칸이지만, registry.yaml이 line-b를 아직 실물로 안
+    돌리고 있어서 의도적으로 뺐다(팔이 안 닿아서가 아님)."""
+    assert LINE_TO_BIN == {"line-a": "bin_a"}
+    for line_id in ("line-b", "line-c", "line-d", "line-e", "line-f"):
+        assert line_id not in LINE_TO_BIN
 
 
 def test_robot_topics_registry_matches_backend_registry_robot_ids():

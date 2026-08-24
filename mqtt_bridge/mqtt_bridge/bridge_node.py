@@ -211,8 +211,8 @@ class BridgeNode(Node):
             line_id = command.payload.get("lineId")
             bin_id = LINE_TO_BIN.get(line_id)
             if bin_id is None:
-                # 물리 칸이 4개(bin_a~d)뿐이라 line-e/line-f는 실물 로봇 지원 대상이
-                # 아니다(2026-08-21 확정) — 정직하게 실패시키고 mock 데이터로 대체.
+                # line-a만 실물로 쓰기로 확정(2026-08-24, 이슈 #17) — 그 외 라인은
+                # 정직하게 실패시키고 mock 데이터로 대체.
                 self.get_logger().warning(
                     f"{command.robotId}: UNLOAD_RESUME lineId={line_id!r}에 대응하는 실물 칸 없음 — FAILED"
                 )
