@@ -82,13 +82,17 @@ DESTINATION_TO_STATION: dict[str, str] = {
     "line-a": "station_b",
 }
 
-# UNLOAD_RESUME의 payload.lineId -> 실물 칸(bin). line-a만 실물로 쓰기로 확정
-# (2026-08-24, 이슈 #17) — 위 DESTINATION_TO_STATION과 같은 이유로 line-b~f는
-# 뺐다. bin_b는 station_b의 같은 팔(omxf-line-01)이 물리적으로 닿을 수 있는
-# 칸이지만, registry.yaml이 line-b를 아직 실물로 안 돌리고 있어서 의도적으로
-# 안 쓴다 — 팔이 안 닿아서가 아니라 위 라우팅 이유 때문이니 헷갈리지 말 것.
-LINE_TO_BIN: dict[str, str] = {
-    "line-a": "bin_a",
+# UNLOAD_RESUME의 payload.partId -> 실물 칸(bin). line-a는 "라인 하나 = 부품
+# 하나"가 아니라 실물 로봇팔(omxf-line-01, station_b)이 닿을 수 있는 칸 4개에
+# 서로 다른 부품이 적재되는 구조다(Backend#37, 2026-08-24 확정) — 그래서 목적지는
+# lineId가 아니라 그 작업의 partId로 정해야 한다. payload에 partId가 이미
+# 실려오므로 COMMAND 계약(wire 포맷) 변경은 없다, 값만 이걸로 해석한다.
+# Backend config/registry.yaml의 line-a bins[].partId와 반드시 맞출 것.
+PART_TO_BIN: dict[str, str] = {
+    "P-101": "bin_a",
+    "P-102": "bin_b",
+    "P-103": "bin_c",
+    "P-104": "bin_d",
 }
 
 

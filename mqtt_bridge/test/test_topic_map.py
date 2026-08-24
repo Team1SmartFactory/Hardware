@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from mqtt_bridge.contracts import RobotRole  # noqa: E402
 from mqtt_bridge.topic_map import (  # noqa: E402
     DESTINATION_TO_STATION,
-    LINE_TO_BIN,
+    PART_TO_BIN,
     ROBOT_TOPICS,
     get_topics,
 )
@@ -63,13 +63,19 @@ def test_destination_to_station_covers_only_line_a():
         assert line_id not in DESTINATION_TO_STATION
 
 
-def test_line_to_bin_covers_only_line_a():
-    """이슈 #17: line-a만 실물로 쓰기로 확정. bin_b는 station_b의 같은 팔이
-    물리적으로 닿을 수 있는 칸이지만, registry.yaml이 line-b를 아직 실물로 안
-    돌리고 있어서 의도적으로 뺐다(팔이 안 닿아서가 아님)."""
-    assert LINE_TO_BIN == {"line-a": "bin_a"}
-    for line_id in ("line-b", "line-c", "line-d", "line-e", "line-f"):
-        assert line_id not in LINE_TO_BIN
+def test_part_to_bin_covers_line_a_four_parts():
+    """Backend#37, 이슈#19: line-a는 부품 4종(P-101~P-104)을 서로 다른 칸에
+    적재한다 — 목적지는 lineId가 아니라 partId로 정한다."""
+    assert PART_TO_BIN == {
+        "P-101": "bin_a",
+        "P-102": "bin_b",
+        "P-103": "bin_c",
+        "P-104": "bin_d",
+    }
+
+
+def test_part_to_bin_returns_none_for_unknown_part():
+    assert PART_TO_BIN.get("P-999") is None
 
 
 def test_robot_topics_registry_matches_backend_registry_robot_ids():

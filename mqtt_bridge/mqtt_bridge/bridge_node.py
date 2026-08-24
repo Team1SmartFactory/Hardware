@@ -49,7 +49,7 @@ from .contracts import (
     now_iso,
 )
 from .mqtt_link import MqttLink
-from .topic_map import DESTINATION_TO_STATION, LINE_TO_BIN, ROBOT_TOPICS, RobotTopics, get_topics
+from .topic_map import DESTINATION_TO_STATION, PART_TO_BIN, ROBOT_TOPICS, RobotTopics, get_topics
 
 _CMD_TOPIC_RE = re.compile(r"^robot/(?P<robot_id>[^/]+)/cmd$")
 
@@ -208,15 +208,16 @@ class BridgeNode(Node):
         if command.action == CommandAction.PICK_LOAD:
             from_slot, to_slot = "warehouse", "carrier"
         else:  # UNLOAD_RESUME
-            line_id = command.payload.get("lineId")
-            bin_id = LINE_TO_BIN.get(line_id)
+            # 목적지 칸은 lineId가 아니라 partId로 정한다(Backend#37, 2026-08-24
+            # 확정) — line-a는 부품 4종을 서로 다른 칸에 적재하므로 "이 라인이면
+            # 이 칸"이 아니라 "이 부품이면 이 칸"이어야 한다.
+            part_id = command.payload.get("partId")
+            bin_id = PART_TO_BIN.get(part_id)
             if bin_id is None:
-                # line-a만 실물로 쓰기로 확정(2026-08-24, 이슈 #17) — 그 외 라인은
-                # 정직하게 실패시키고 mock 데이터로 대체.
                 self.get_logger().warning(
-                    f"{command.robotId}: UNLOAD_RESUME lineId={line_id!r}에 대응하는 실물 칸 없음 — FAILED"
+                    f"{command.robotId}: UNLOAD_RESUME partId={part_id!r}에 대응하는 실물 칸 없음 — FAILED"
                 )
-                self._publish_failed(command, ErrorCode.UNSUPPORTED.value, f"no physical bin for lineId={line_id}")
+                self._publish_failed(command, ErrorCode.UNSUPPORTED.value, f"no physical bin for partId={part_id}")
                 return
             from_slot, to_slot = "carrier", bin_id
 
