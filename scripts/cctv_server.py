@@ -53,7 +53,17 @@ class CameraWorker(threading.Thread):
 
     def run(self) -> None:
         while True:
-            cap = cv2.VideoCapture(self.device)
+            cap = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
+            # 카메라가 선상 압축(MJPG)으로 보내게 요청한다. 기본 무압축(YUYV)은
+            # USB2 등시성 대역폭을 크게 차지한다. 지원하지 않는 카메라면 set이
+            # 조용히 무시되고 기본 포맷으로 돈다.
+            #
+            # 한계(2026-08-24 실측): 로지텍 C270은 MJPG·저해상도로 낮춰도
+            # uvcvideo가 광고된 페이로드 크기만큼 대역폭을 예약해서, 같은 USB2
+            # 허브에 두 대를 꽂으면 두 번째가 "Failed to allocate required
+            # memory"로 끝내 열리지 않는다. 카메라들은 서로 다른 본체 포트에
+            # 직결하고, 키보드류 저속 장치를 허브로 보내는 게 답이다.
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             if not cap.isOpened():
                 print(f"[cctv] {self.camera_id}: {self.device} 열기 실패 - 5초 후 재시도"
                       " (ROS usb_cam이 잡고 있지 않은지 확인)")
