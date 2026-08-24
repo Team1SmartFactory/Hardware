@@ -70,27 +70,25 @@ ROBOT_TOPICS: dict[str, RobotTopics] = {
     # 그래서 지금 전부 mock_robot.py/mock_vision.py의 시뮬레이션 응답으로 대체된다.
 }
 
-# MOVE_TO의 destination -> 실제 비글 스테이션 이름. Backend는 "STORAGE" 또는 라인
-# id(line-a~f)를 보내는데, 물리 베이는 station_a(보관소)/station_b(라인) 둘뿐이라
-# 어느 라인이든 station_b로 간다(ROS2_WIRING.md §3 MOVE_TO 절).
+# MOVE_TO의 destination -> 실제 비글 스테이션 이름. line-a만 실물로 쓰기로 확정
+# (이슈 #17) — Backend config/registry.yaml이 line-b~f의 로봇 역할을 전부 가상
+# robotId로 라우팅하고 있어서, 이 실물 브리지(ROBOT_TOPICS)에는 애초에 도달하지
+# 않는다. 여기 없는 destination은 UNSUPPORTED로 명시적으로 거부된다 — registry.yaml이
+# 실수로든 의도적으로든 line-b~f를 실물 robotId로 잘못 라우팅해도 조용히 받지
+# 않고 확실하게 실패한다. line-b 이후를 실물로 확장하려면 registry.yaml에서 해당
+# 라인의 로봇 역할을 실물 robotId로 먼저 바꾸고, 여기에도 항목을 추가할 것.
 DESTINATION_TO_STATION: dict[str, str] = {
     "STORAGE": "station_a",
     "line-a": "station_b",
-    "line-b": "station_b",
-    "line-c": "station_b",
-    "line-d": "station_b",
-    "line-e": "station_b",
-    "line-f": "station_b",
 }
 
-# UNLOAD_RESUME의 payload.lineId -> 실물 칸(bin). 물리 칸이 4개(bin_a~d)뿐이라
-# line-e/line-f는 지원 대상에서 뺐다 — 이 두 라인은 당분간 mock 데이터로 유지
-# (2026-08-21 확정, ROS2_WIRING.md §3 UNLOAD_RESUME 절의 제안을 그대로 채택).
+# UNLOAD_RESUME의 payload.lineId -> 실물 칸(bin). line-a만 실물로 쓰기로 확정
+# (2026-08-24, 이슈 #17) — 위 DESTINATION_TO_STATION과 같은 이유로 line-b~f는
+# 뺐다. bin_b는 station_b의 같은 팔(omxf-line-01)이 물리적으로 닿을 수 있는
+# 칸이지만, registry.yaml이 line-b를 아직 실물로 안 돌리고 있어서 의도적으로
+# 안 쓴다 — 팔이 안 닿아서가 아니라 위 라우팅 이유 때문이니 헷갈리지 말 것.
 LINE_TO_BIN: dict[str, str] = {
     "line-a": "bin_a",
-    "line-b": "bin_b",
-    "line-c": "bin_c",
-    "line-d": "bin_d",
 }
 
 
