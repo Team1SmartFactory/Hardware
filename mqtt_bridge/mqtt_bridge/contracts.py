@@ -167,6 +167,10 @@ class Inventory(MessageBase):
     cameraId: str
     partName: str | None = None
     requiredQty: int | None = None
+    # Backend#37 예약 필드 — line-a처럼 칸(bin) 단위로 부품을 관리하는 라인의 칸을
+    # 식별한다. 카메라 캘리브레이션이 끝나 칸 단위 비전 연동이 붙기 전까지는
+    # 아무도 안 채운다.
+    binId: str | None = None
 
 
 # STATUS.detail 고정값 (DONE일 때 role/action별 권장 문구). 강제는 아니지만
