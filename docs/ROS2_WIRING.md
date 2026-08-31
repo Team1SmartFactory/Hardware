@@ -44,7 +44,12 @@ class RobotTopics:
 | `omxf-storage-01` | transfer `/station_a/stock/transfer`, state `/station_a/stock/task_state` | 보관소 팔 (PC1) |
 | `beagle-01` | goal `/beagle/goto`, state `/beagle/state`, estop `/beagle/estop` | 브릿지 노드는 Docker 컨테이너에서 상주 |
 | `omxf-line-01` | transfer `/station_b/stock/transfer`, state `/station_b/stock/task_state` | 라인 팔 (PC1), 셀 `bin_a`/`bin_b` 담당 |
-| (예정) `omxf-line-02` | transfer `/station_c/stock/transfer`, state `/station_c/stock/task_state` | PC2의 세 번째 팔, 셀 `bin_c`/`bin_d`. 티칭·레이아웃 미완이라 아직 태스크 매니저 없음 |
+| `omxf-line-07` | transfer `/station_c/stock/transfer`, state `/station_c/stock/task_state` | 라인 팔 (PC2), 셀 `bin_c`/`bin_d`. 2026-08-31 티칭 완료로 합류 |
+
+> `omxf-line-07`인 이유: 이 표는 원래 `omxf-line-02`를 예약해 뒀지만, 그 robotId는
+> Backend `config/registry.yaml`에서 시뮬 line-b의 팔이 이미 쓰고 있다. robotId는
+> 전역 유일해야 하고 겹치면 line-b로 간 커맨드가 실물 팔을 움직인다 — 시뮬이
+> 점유한 02~06을 피해 07로 부여했다.
 
 토픽 타입은 `/beagle/estop`만 `std_msgs/Bool`이고 나머지는 전부
 `std_msgs/String`(JSON 문자열)이다. ROS2 환경은 도메인 0,
@@ -130,11 +135,13 @@ Backend orchestrator의 PICK_LOAD→MOVE_TO→UNLOAD_RESUME→MOVE_TO 4단계는
 - **telemetry (§8)**: 비글은 SLAM/GPS가 없고 데드레코닝뿐이라 x/y 포즈 스트림이
   없다. QoS 0 선택 항목이므로 phase 1에서는 발행 생략. (원하면 루트 진행률로
   1차원 보간 위치를 합성하는 게 phase 2 후보.)
-- **inventory (§10)**: 로봇 저장소에 `stock_monitor_node`(칸 ROI 기반 재고
-  감시, reference/yolo 백엔드)가 있으나 셀 재배치로 ROI가 전부 플레이스홀더다.
-  카메라 셋업/캘리브레이션(`stock_calibrate.py`) 후 monitor의 출력을
-  `line/{lineId}/inventory` 스키마로 변환해 발행하는 어댑터를 브리지에 붙인다
-  — phase 2. 그때까지는 `PUT /api/lines/{id}/stock` 수동 트리거로 시연.
+- ~~**inventory (§10)**~~: 2026-08-31 해소. 재고 카메라 ROI가 실측으로 채워지고
+  `stock_monitor_node`가 칸 a~d를 실제로 판정하게 되면서, 브리지가 `/stock/status`를
+  칸 단위 INVENTORY로 중계한다(§10.2). 판정이 안정된 칸만 올린다 — 팔이 칸 위를
+  지나가는 프레임을 부족으로 올리면 사람이 치우지도 않은 칸에 로봇이 움직인다.
+- ~~**승인 전 확인**~~: 2026-08-31 신설. 창고에 부품이, 베이에 비글이 있는지를
+  `/stock/station_a_ready` -> `station/{stationId}/readiness`로 중계한다(§10.3).
+  백엔드는 승인 시점에 이 값을 보고 거절할 수 있다.
 
 ## 6. 작업 순서 (DoD 포함)
 

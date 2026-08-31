@@ -11,9 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mqtt_bridge.contracts import RobotRole  # noqa: E402
 from mqtt_bridge.topic_map import (  # noqa: E402
+    BIN_TO_PART,
     DESTINATION_TO_STATION,
     PART_TO_BIN,
     ROBOT_TOPICS,
+    STOCK_BIN_TO_LINE,
     get_topics,
 )
 
@@ -79,6 +81,31 @@ def test_part_to_bin_returns_none_for_unknown_part():
 
 
 def test_robot_topics_registry_matches_backend_registry_robot_ids():
-    """topic_map.py의 키 3개는 Backend config/registry.yaml의 실기 robotId와
-    일치해야 브리지가 커맨드를 알아본다."""
-    assert set(ROBOT_TOPICS) == {"omxf-storage-01", "beagle-01", "omxf-line-01"}
+    """topic_map.py의 키는 Backend config/registry.yaml의 실기 robotId와
+    일치해야 브리지가 커맨드를 알아본다. 2026-08-31 station_c(칸 c/d) 합류."""
+    assert set(ROBOT_TOPICS) == {
+        "omxf-storage-01",
+        "beagle-01",
+        "omxf-line-01",
+        "omxf-line-07",
+    }
+
+
+def test_station_c_arm_is_not_the_simulated_line_b_arm():
+    """station_c에 omxf-line-02를 쓰면 시뮬 line-b의 팔과 robotId가 겹쳐,
+    line-b로 간 커맨드가 실물 팔을 움직인다 — 그래서 07이다."""
+    assert "omxf-line-02" not in ROBOT_TOPICS
+    assert ROBOT_TOPICS["omxf-line-07"].transfer_topic == "/station_c/stock/transfer"
+    assert ROBOT_TOPICS["omxf-line-07"].state_topic == "/station_c/stock/task_state"
+
+
+def test_stock_bins_map_to_line_a_bins_and_their_parts():
+    """재고 카메라가 부르는 칸 이름(bin_a~d)과 대시보드의 binId/label/partId가
+    한 줄로 이어져야 칸 단위 INVENTORY가 엉뚱한 칸에 꽂히지 않는다."""
+    assert set(STOCK_BIN_TO_LINE) == set(BIN_TO_PART) == set(PART_TO_BIN.values())
+    for monitor_bin, (line_id, bin_id, label) in STOCK_BIN_TO_LINE.items():
+        assert line_id == "line-a"
+        assert bin_id == f"line-a-bin-{label}"
+        assert monitor_bin == f"bin_{label}"
+        # partId -> bin 매핑과 정확히 역방향이어야 한다
+        assert PART_TO_BIN[BIN_TO_PART[monitor_bin]] == monitor_bin

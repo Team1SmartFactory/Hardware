@@ -41,6 +41,9 @@ from .contracts import (
     DONE_DETAIL_BY_ACTION,
     ErrorCode,
     ErrorDetail,
+    Inventory,
+    InventoryStatus,
+    Readiness,
     RobotRole,
     RobotState,
     Status,
@@ -49,9 +52,23 @@ from .contracts import (
     now_iso,
 )
 from .mqtt_link import MqttLink
-from .topic_map import DESTINATION_TO_STATION, PART_TO_BIN, ROBOT_TOPICS, RobotTopics, get_topics
+from .topic_map import (
+    BIN_TO_PART,
+    DESTINATION_TO_STATION,
+    PART_TO_BIN,
+    ROBOT_TOPICS,
+    RobotTopics,
+    STOCK_BIN_TO_LINE,
+    get_topics,
+)
 
 _CMD_TOPIC_RE = re.compile(r"^robot/(?P<robot_id>[^/]+)/cmd$")
+
+# 비전 노드들이 발행하는 ROS2 토픽 (로봇 저장소 open_manipulator_playground).
+STOCK_STATUS_TOPIC = "/stock/status"
+STATION_READY_TOPIC = "/stock/station_a_ready"
+# 재고 카메라 id — registry.yaml의 cameras[]와 맞춘다(진단용 필드).
+STOCK_CAMERA_ID = "cam-line-a"
 
 # ROS2_WIRING.md §3 HOME 절: 비글의 HOME은 "STORAGE로 가는 MOVE_TO"와 동일하게 처리.
 _HOME_DESTINATION = "STORAGE"
@@ -126,6 +143,16 @@ class BridgeNode(Node):
                 # 다른 토픽과 달리 estop만 std_msgs/Bool이다(실물 beagle_bridge_node의
                 # 구독 타입) — String으로 발행하면 타입 불일치로 조용히 버려진다(#13).
                 self._estop_pubs[robot_id] = self.create_publisher(Bool, topics.estop_topic, 10)
+
+        # 비전 -> 대시보드. 로봇 커맨드와 달리 이쪽은 상태를 흘려보내기만 한다.
+        #   /stock/status          칸 a~d의 filled/empty 판정 (stock_monitor_node)
+        #   /stock/station_a_ready 창고에 부품이, 베이에 비글이 있는지 (stock_arrival_node)
+        # 둘 다 판정이 바뀔 때만 MQTT로 나간다 — 카메라는 초당 여러 번 말하지만
+        # 그 대부분은 같은 말이고, retain 토픽에 같은 값을 계속 쓸 이유가 없다.
+        self._last_bin_state: dict[str, str] = {}
+        self._last_readiness: dict | None = None
+        self.create_subscription(String, STOCK_STATUS_TOPIC, self._on_stock_status, 10)
+        self.create_subscription(String, STATION_READY_TOPIC, self._on_station_ready, 10)
 
         self.get_logger().info(f"MQTT 브리지 시작 (broker={host}:{port}, 관리 로봇: {self._managed_robot_ids})")
 
@@ -358,6 +385,92 @@ class BridgeNode(Node):
     # ------------------------------------------------------------------
     # ROS2 -> MQTT (커맨드 상태 발행)
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # 비전 ROS2 -> MQTT (이슈 #27)
+    # ------------------------------------------------------------------
+
+    def _on_stock_status(self, msg: String) -> None:
+        """재고 카메라의 칸별 판정을 칸 단위 INVENTORY로 중계한다.
+
+        판정은 filled/empty 둘뿐이라 areaRatio는 1.0/0.0으로만 나간다 — 이 카메라는
+        "부품이 있나 없나"를 보지, 얼마나 찼는지를 재지 않는다. 백엔드 임계치가
+        0과 1 사이 어디에 있든 이 두 값이면 부족/충분이 갈린다.
+
+        아직 판정이 안정되지 않은 칸(stable=false)은 보내지 않는다. 팔이 칸 위를
+        지나가는 한두 프레임이 그대로 '부족'이 되어 승인 팝업을 띄우면, 사람이
+        치우지도 않은 칸에 대해 로봇이 움직이게 된다.
+        """
+        try:
+            report = json.loads(msg.data)
+            bins = report.get("bins") or []
+        except (json.JSONDecodeError, AttributeError):
+            self.get_logger().warn(f"재고 판정 JSON 파싱 실패, 무시: {msg.data!r}")
+            return
+
+        for entry in bins:
+            mapped = STOCK_BIN_TO_LINE.get(entry.get("id"))
+            if mapped is None or not entry.get("stable"):
+                continue
+            state = entry.get("state")
+            if state not in ("filled", "empty"):
+                continue  # unknown — 카메라가 판단을 못 한 것이지 빈 게 아니다
+            line_id, bin_id, label = mapped
+            if self._last_bin_state.get(bin_id) == state:
+                continue
+            self._last_bin_state[bin_id] = state
+
+            filled = state == "filled"
+            inventory = Inventory(
+                timestamp=now_iso(),
+                lineId=line_id,
+                binId=bin_id,
+                partId=BIN_TO_PART.get(entry["id"], ""),
+                areaRatio=1.0 if filled else 0.0,
+                thresholdRatio=0.05,
+                qtyEstimate=1 if filled else 0,
+                status=InventoryStatus.OK if filled else InventoryStatus.LOW,
+                source="CV_AREA",
+                cameraId=STOCK_CAMERA_ID,
+            )
+            self._mqtt.publish(
+                f"line/{line_id}/bin/{label}/inventory",
+                inventory.model_dump(mode="json"),
+                qos=1,
+                retain=True,
+            )
+            self.get_logger().info(f"칸 재고 변화 -> {bin_id}: {state}")
+
+    def _on_station_ready(self, msg: String) -> None:
+        """스테이션이 지금 보충을 시작할 수 있는 상태인지를 중계한다."""
+        try:
+            report = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError):
+            self.get_logger().warn(f"준비 상태 JSON 파싱 실패, 무시: {msg.data!r}")
+            return
+
+        checks = {k: bool(v) for k, v in (report.get("checks") or {}).items()}
+        station_id = str(report.get("station") or "station-a")
+        current = {"ready": bool(report.get("ready")), "checks": checks}
+        if self._last_readiness == current:
+            return  # 1Hz로 계속 오지만 대부분 같은 말이다
+        self._last_readiness = current
+
+        readiness = Readiness(
+            timestamp=now_iso(),
+            stationId=station_id,
+            ready=current["ready"],
+            checks=checks,
+            source="CV_AREA",
+            cameraId="cam-warehouse",
+        )
+        self._mqtt.publish(
+            f"station/{station_id}/readiness",
+            readiness.model_dump(mode="json"),
+            qos=1,
+            retain=True,
+        )
+        self.get_logger().info(f"{station_id} 준비 상태 변화: {current}")
 
     def _publish_status(
         self,

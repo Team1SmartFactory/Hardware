@@ -64,10 +64,39 @@ ROBOT_TOPICS: dict[str, RobotTopics] = {
         transfer_topic="/station_b/stock/transfer",
         state_topic="/station_b/stock/task_state",
     ),
-    # omxf-line-02(PC2, station_c 담당)는 티칭·레이아웃이 아직 안 끝나서 태스크
-    # 매니저가 없다 — 실물 노드가 뜨면 이 맵에 추가한다(ROS2_WIRING.md §2). 이 맵에
-    # 없는 robotId의 커맨드는 bridge_node가 무시하고 경고만 남긴다 — line-b~line-f는
-    # 그래서 지금 전부 mock_robot.py/mock_vision.py의 시뮬레이션 응답으로 대체된다.
+    # PC2의 세 번째 팔(station_c, 칸 c/d 담당). 2026-08-31 티칭·레이아웃 완료로
+    # 합류했다. ⚠️ ROS2_WIRING.md §2가 예약해 둔 이름은 omxf-line-02였지만 그
+    # robotId는 시뮬 line-b의 팔이 이미 쓰고 있다(registry.yaml) — 전역 유일해야
+    # 하는 값이라 겹치면 line-b의 커맨드가 이 실물 팔로 샌다. 그래서 시뮬이
+    # 점유한 02~06을 피해 07로 부여했다.
+    "omxf-line-07": RobotTopics(
+        role=RobotRole.LINE_ARM,
+        transfer_topic="/station_c/stock/transfer",
+        state_topic="/station_c/stock/task_state",
+    ),
+    # 이 맵에 없는 robotId의 커맨드는 bridge_node가 무시하고 경고만 남긴다 —
+    # line-b~line-f는 그래서 지금 전부 mock_robot.py/mock_vision.py의 시뮬레이션
+    # 응답으로 대체된다.
+}
+
+# 재고 비전(로봇 저장소 stock_monitor_node)이 보는 칸 이름 -> 대시보드의 binId.
+# 칸 단위 INVENTORY를 line/{lineId}/bin/{label}/inventory로 중계할 때 쓴다
+# (이슈 #27). Backend config/registry.yaml의 line-a bins[].binId/label과 맞출 것.
+STOCK_BIN_TO_LINE: dict[str, tuple[str, str, str]] = {
+    # monitor의 bin id: (lineId, binId, label)
+    "bin_a": ("line-a", "line-a-bin-a", "a"),
+    "bin_b": ("line-a", "line-a-bin-b", "b"),
+    "bin_c": ("line-a", "line-a-bin-c", "c"),
+    "bin_d": ("line-a", "line-a-bin-d", "d"),
+}
+
+# 칸 -> 그 칸에 부품을 놓는 partId. PART_TO_BIN의 역방향으로, 칸 단위 INVENTORY에
+# partId를 채우는 데만 쓴다.
+BIN_TO_PART: dict[str, str] = {
+    "bin_a": "P-101",
+    "bin_b": "P-102",
+    "bin_c": "P-103",
+    "bin_d": "P-104",
 }
 
 # MOVE_TO의 destination -> 실제 비글 스테이션 이름. line-a만 실물로 쓰기로 확정

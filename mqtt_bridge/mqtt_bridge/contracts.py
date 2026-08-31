@@ -167,10 +167,32 @@ class Inventory(MessageBase):
     cameraId: str
     partName: str | None = None
     requiredQty: int | None = None
-    # Backend#37 예약 필드 — line-a처럼 칸(bin) 단위로 부품을 관리하는 라인의 칸을
-    # 식별한다. 카메라 캘리브레이션이 끝나 칸 단위 비전 연동이 붙기 전까지는
-    # 아무도 안 채운다.
+    # line-a처럼 칸(bin) 단위로 부품을 관리하는 라인의 칸(Backend#37). 2026-08-31
+    # 칸 단위 비전이 붙으면서 실제로 채워지기 시작했다 — 이 필드가 있으면 발행
+    # 토픽도 line/{lineId}/bin/{label}/inventory 쪽이다(§10.2). 라인 하나에 칸이
+    # 넷인데 retain 토픽이 하나뿐이면 마지막 칸만 남으므로 토픽을 나눈다.
     binId: str | None = None
+
+
+class Readiness(MessageBase):
+    """비전 -> 백엔드. station/{stationId}/readiness 토픽으로 발행 (§10.3).
+
+    승인된 보충을 실제로 시작해도 되는지를 스테이션 하나에 대해 답한다. 웹에서
+    승인이 떨어져도 창고에 부품이 없거나 비글이 베이에 없으면 팔이 허공을 집는다 —
+    그 두 가지를 같은 카메라 프레임에서 확인해 알린다.
+
+    retain=true: 백엔드는 승인 요청을 받은 그 순간의 최신값이 필요하지, 구독을
+    시작한 뒤 다음 발행을 기다릴 수 없다.
+    """
+
+    type: Literal["READINESS"] = "READINESS"
+    stationId: str
+    ready: bool
+    # 무엇이 없어서 ready=false인지 — 사용자에게 "창고가 비었습니다"를 보여주려면
+    # 결론만으로는 부족하다.
+    checks: dict[str, bool] = Field(default_factory=dict)
+    source: InventorySource | str = "CV_AREA"
+    cameraId: str | None = None
 
 
 # STATUS.detail 고정값 (DONE일 때 role/action별 권장 문구). 강제는 아니지만
