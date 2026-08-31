@@ -43,6 +43,9 @@ class CommandAction(str, Enum):
     UNLOAD_RESUME = "UNLOAD_RESUME"
     HOME = "HOME"
     ABORT = "ABORT"
+    # 실패한 작업 때문에 스스로 멈춘 팔에게 "다시 일을 받아라"라고만 말한다.
+    # 재시도도 아니고 팔이 움직이지도 않는다 — 실패한 작업은 실패한 채로 남는다.
+    RESUME = "RESUME"
 
 
 class RobotState(str, Enum):
@@ -172,6 +175,24 @@ class Inventory(MessageBase):
     # 토픽도 line/{lineId}/bin/{label}/inventory 쪽이다(§10.2). 라인 하나에 칸이
     # 넷인데 retain 토픽이 하나뿐이면 마지막 칸만 남으므로 토픽을 나눈다.
     binId: str | None = None
+
+
+class Condition(MessageBase):
+    """브리지 -> 백엔드. robot/{robotId}/condition (COMMAND_SCHEMA.md §7.2).
+
+    작업이 실패하면 스테이션은 스스로 멈춰 서서 더 이상 일을 받지 않는다. STATUS로는
+    이 사실을 전할 수 없다 — STATUS는 특정 커맨드의 결과라서, 그 커맨드가 끝난 뒤에도
+    팔이 계속 멈춰 있다는 사실을 실어 나를 자리가 없다.
+
+    retain=true: 백엔드가 재시작해도 멈춰 있는 팔은 여전히 멈춰 있다. 그 사실을
+    다시 알려줄 사건은 일어나지 않으므로 브로커가 들고 있어야 한다.
+    """
+
+    type: Literal["CONDITION"] = "CONDITION"
+    robotId: str
+    blocked: bool
+    # 왜 멈췄는지 — 화면에 "복구" 버튼만 띄우면 사용자는 무엇을 고쳐야 할지 모른다.
+    detail: str | None = None
 
 
 class Readiness(MessageBase):

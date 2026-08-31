@@ -33,11 +33,12 @@ from functools import partial
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Empty, String
 
 from .contracts import (
     Command,
     CommandAction,
+    Condition,
     DONE_DETAIL_BY_ACTION,
     ErrorCode,
     ErrorDetail,
@@ -104,6 +105,10 @@ class BridgeNode(Node):
         self._transfer_pubs: dict[str, object] = {}
         self._goal_pubs: dict[str, object] = {}
         self._estop_pubs: dict[str, object] = {}
+        self._resume_pubs: dict[str, object] = {}
+        # robotId -> 마지막으로 알린 멈춤 여부. 같은 말을 retain 토픽에 반복해서
+        # 쓰지 않으려고 들고 있는다 (task_state는 0.5초마다 온다).
+        self._last_blocked: dict[str, bool] = {}
 
         self._mqtt = MqttLink(host=host, port=port, client_id="hardware-bridge")
         self._mqtt.on_message_callback = self._on_mqtt_message
@@ -133,6 +138,8 @@ class BridgeNode(Node):
                 self.create_subscription(
                     String, topics.state_topic, partial(self._on_arm_state, robot_id), 10
                 )
+            if topics.resume_topic:
+                self._resume_pubs[robot_id] = self.create_publisher(Empty, topics.resume_topic, 10)
             if topics.goal_topic:
                 self._goal_pubs[robot_id] = self.create_publisher(String, topics.goal_topic, 10)
             if topics.beagle_state_topic:
@@ -219,6 +226,8 @@ class BridgeNode(Node):
             self._dispatch_home(command, topics)
         elif command.action == CommandAction.ABORT:
             self._dispatch_abort(command, topics)
+        elif command.action == CommandAction.RESUME:
+            self._dispatch_resume(command, topics)
 
     def _dispatch_arm(self, command: Command, topics: RobotTopics) -> None:
         """PICK_LOAD / UNLOAD_RESUME. 스테이션 태스크 매니저에 transfer 요청 하나를
@@ -294,6 +303,21 @@ class BridgeNode(Node):
         publisher.publish(Bool(data=True))  # 래치됨 — 해제(data=False)는 현 계약에 없음
         self._publish_done(command)
 
+    def _dispatch_resume(self, command: Command, topics: RobotTopics) -> None:
+        """실패로 멈춰 선 팔에게 다시 일을 받으라고 알린다 (§3 RESUME).
+
+        보내고 나면 바로 DONE이다 — 팔이 움직이지 않으니 기다릴 완료가 없고, 실제로
+        풀렸는지는 task_state가 곧 condition으로 알려준다. 여기서 팔의 응답을
+        기다리면 이미 멈춰 있는 팔 때문에 복구 요청까지 타임아웃으로 죽는다.
+        """
+        publisher = self._resume_pubs.get(command.robotId)
+        if publisher is None:
+            # 비글에는 대응하는 개념이 없다 — ABORT와 같은 이유로 정직하게 거절한다.
+            self._publish_failed(command, ErrorCode.UNSUPPORTED.value, "no resume interface for this robot")
+            return
+        publisher.publish(Empty())
+        self._publish_done(command)
+
     def _go_to_station(self, command: Command, target_station: str) -> None:
         """비글에게 target_station으로 가라고 지시한다. 최근 관측한 상태로 봤을 때
         이미 그 스테이션에 도착해 있으면(ready_for_arm까지 참) 새로 움직이지 않고
@@ -324,6 +348,7 @@ class BridgeNode(Node):
             self.get_logger().warning(f"{robot_id}: task_state JSON 파싱 실패, 무시: {msg.data!r}")
             return
         self._arm_last_state[robot_id] = state
+        self._report_condition(robot_id, state)
 
         command = self._pending.get(robot_id)
         if command is None or command.action not in (CommandAction.PICK_LOAD, CommandAction.UNLOAD_RESUME):
@@ -385,6 +410,35 @@ class BridgeNode(Node):
     # ------------------------------------------------------------------
     # ROS2 -> MQTT (커맨드 상태 발행)
     # ------------------------------------------------------------------
+
+    def _report_condition(self, robot_id: str, state: dict) -> None:
+        """팔이 스스로 멈춰 섰는지를 알린다 (이슈 #29).
+
+        STATUS로는 전할 수 없는 사실이다 — STATUS는 특정 커맨드의 결과라서, 그
+        커맨드가 끝난 뒤에도 팔이 계속 일을 안 받는다는 상태를 실어 나를 자리가
+        없다. 그래서 커맨드와 무관한 retain 토픽을 따로 쓴다.
+        """
+        blocked = state.get("state") == "blocked"
+        if self._last_blocked.get(robot_id) == blocked:
+            return
+        self._last_blocked[robot_id] = blocked
+
+        last_job = state.get("last_job") or {}
+        condition = Condition(
+            timestamp=now_iso(),
+            robotId=robot_id,
+            blocked=blocked,
+            detail=(last_job.get("error") if blocked else None),
+        )
+        self._mqtt.publish(
+            f"robot/{robot_id}/condition",
+            condition.model_dump(mode="json"),
+            qos=1,
+            retain=True,
+        )
+        self.get_logger().info(
+            f"{robot_id} 멈춤 상태 변화: blocked={blocked} ({condition.detail or '-'})"
+        )
 
     # ------------------------------------------------------------------
     # 비전 ROS2 -> MQTT (이슈 #27)

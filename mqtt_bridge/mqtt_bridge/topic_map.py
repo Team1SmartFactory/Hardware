@@ -37,6 +37,9 @@ class RobotTopics:
     #                 "last_job": {"id": ..., "result": "ok"|"failed"|"rejected", "error": ...} | null}
     transfer_topic: str | None = None
     state_topic: str | None = None
+    # 실패로 멈춰 선 팔을 다시 일하게 하는 토픽 (std_msgs/Empty). 재시도가 아니라
+    # "다시 일을 받아라"일 뿐이라 페이로드가 없다.
+    resume_topic: str | None = None
 
     # AMR(Beagle) 전용
     goal_topic: str | None = None  # 발행: 목표 스테이션 이름 문자열 (예: "station_a")
@@ -52,6 +55,7 @@ ROBOT_TOPICS: dict[str, RobotTopics] = {
         role=RobotRole.STORAGE_ARM,
         transfer_topic="/station_a/stock/transfer",
         state_topic="/station_a/stock/task_state",
+        resume_topic="/station_a/stock/resume",
     ),
     "beagle-01": RobotTopics(
         role=RobotRole.AMR,
@@ -63,6 +67,7 @@ ROBOT_TOPICS: dict[str, RobotTopics] = {
         role=RobotRole.LINE_ARM,
         transfer_topic="/station_b/stock/transfer",
         state_topic="/station_b/stock/task_state",
+        resume_topic="/station_b/stock/resume",
     ),
     # PC2의 세 번째 팔(station_c, 칸 c/d 담당). 2026-08-31 티칭·레이아웃 완료로
     # 합류했다. ⚠️ ROS2_WIRING.md §2가 예약해 둔 이름은 omxf-line-02였지만 그
@@ -73,6 +78,7 @@ ROBOT_TOPICS: dict[str, RobotTopics] = {
         role=RobotRole.LINE_ARM,
         transfer_topic="/station_c/stock/transfer",
         state_topic="/station_c/stock/task_state",
+        resume_topic="/station_c/stock/resume",
     ),
     # 이 맵에 없는 robotId의 커맨드는 bridge_node가 무시하고 경고만 남긴다 —
     # line-b~line-f는 그래서 지금 전부 mock_robot.py/mock_vision.py의 시뮬레이션
