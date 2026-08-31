@@ -27,6 +27,7 @@
 | `bridge/online` | 브리지→BE | 1 | true | 브리지 (LWT) — §9a **신설** |
 | `line/{lineId}/inventory` | 비전→BE | 1 | true | 비전 발행기 — §10 |
 | `line/{lineId}/bin/{label}/inventory` | 비전→BE | 1 | true | 브리지 — §10.2 **신설** |
+| `robot/{robotId}/condition` | 로봇→BE | 1 | true | 브리지 — §7.2 **신설** |
 | `station/{stationId}/readiness` | 비전→BE | 1 | true | 브리지 — §10.3 **신설** |
 
 **retain 규약 (필수 준수)**
@@ -261,6 +262,36 @@
 - **발행 경로 확정 (자문 C2)**: 비전(YOLO) 호스트 프로세스가 **paho-mqtt로 직접 발행**한다.
   ROS2를 경유하지 않는다 (stock_bridge.py의 JSON→ROS2→브리지→MQTT 3-hop 계획 폐기 —
   YOLO 호스트↔ROS2 Docker 경계 문제가 MQTT 직결로 자연 해소).
+
+### 7.2 멈춤 상태: `robot/{robotId}/condition` (신설, 2026-08-31)
+
+작업이 실패하면 스테이션은 스스로 멈춰 서서 더 이상 일을 받지 않는다. 그 사실은
+STATUS로 전할 수 없다 — STATUS는 특정 커맨드의 결과라서, 그 커맨드가 끝난 뒤에도
+팔이 계속 멈춰 있다는 상태를 실어 나를 자리가 없다.
+
+```json
+{
+  "type": "CONDITION", "timestamp": "...", "schemaVersion": 2,
+  "robotId": "omxf-storage-01", "blocked": true,
+  "detail": "step failed with status 5"
+}
+```
+
+- **retain=true**: 백엔드가 재시작해도 멈춰 있는 팔은 여전히 멈춰 있고, 그 사실을
+  다시 알려줄 사건은 일어나지 않는다.
+- 변화가 있을 때만 발행한다(task_state는 0.5초마다 온다).
+- `detail`은 마지막 실패 작업의 사유다. "복구" 버튼만 띄우면 사용자는 무엇을
+  고쳐야 할지 모른다.
+
+### 3.1 RESUME 액션 (신설, 2026-08-31)
+
+`robot/{robotId}/cmd`에 `action: "RESUME"`, payload는 비어 있다. 브리지는 그 팔의
+resume 토픽(std_msgs/Empty)에 한 번 쓰고 **즉시 DONE**을 반송한다 — 팔이 움직이지
+않으니 기다릴 완료가 없고, 이미 멈춰 있는 팔의 응답을 기다리면 복구 요청까지
+타임아웃으로 죽는다. 실제로 풀렸는지는 곧 `condition`이 알려준다.
+
+재시도가 아니다: 실패한 작업은 실패한 채로 남고 팔은 제자리에 있다. "이 셀을 다시
+쓸 수 있다"는 말일 뿐이다. 비글에는 대응하는 개념이 없어 FAILED(UNSUPPORTED).
 
 ### 10.2 칸 단위 INVENTORY: `line/{lineId}/bin/{label}/inventory` (신설, 2026-08-31)
 

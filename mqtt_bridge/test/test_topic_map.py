@@ -109,3 +109,13 @@ def test_stock_bins_map_to_line_a_bins_and_their_parts():
         assert monitor_bin == f"bin_{label}"
         # partId -> bin 매핑과 정확히 역방향이어야 한다
         assert PART_TO_BIN[BIN_TO_PART[monitor_bin]] == monitor_bin
+
+
+def test_every_arm_has_a_resume_topic():
+    """작업이 한 번 실패하면 팔은 스스로 멈춰 서고, 그걸 푸는 길이 없으면 남은
+    방법은 노드 재시작뿐이다 — 대시보드 앞에 선 사람에게 시킬 일이 아니다."""
+    for robot_id, topics in ROBOT_TOPICS.items():
+        if topics.role is RobotRole.AMR:
+            assert topics.resume_topic is None  # 비글에는 대응하는 개념이 없다
+            continue
+        assert topics.resume_topic == topics.state_topic.replace("task_state", "resume")
