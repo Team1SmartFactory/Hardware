@@ -26,6 +26,8 @@
 | `robot/{robotId}/online` | 로봇→BE | 1 | true | 개별 어댑터 (LWT) — §9 |
 | `bridge/online` | 브리지→BE | 1 | true | 브리지 (LWT) — §9a **신설** |
 | `line/{lineId}/inventory` | 비전→BE | 1 | true | 비전 발행기 — §10 |
+| `line/{lineId}/bin/{label}/inventory` | 비전→BE | 1 | true | 브리지 — §10.2 **신설** |
+| `station/{stationId}/readiness` | 비전→BE | 1 | true | 브리지 — §10.3 **신설** |
 
 **retain 규약 (필수 준수)**
 - `online` / `bridge/online` / `inventory`는 **retain=true** — BE가 재시작해도 브로커에서
@@ -259,6 +261,51 @@
 - **발행 경로 확정 (자문 C2)**: 비전(YOLO) 호스트 프로세스가 **paho-mqtt로 직접 발행**한다.
   ROS2를 경유하지 않는다 (stock_bridge.py의 JSON→ROS2→브리지→MQTT 3-hop 계획 폐기 —
   YOLO 호스트↔ROS2 Docker 경계 문제가 MQTT 직결로 자연 해소).
+
+### 10.2 칸 단위 INVENTORY: `line/{lineId}/bin/{label}/inventory` (신설, 2026-08-31)
+
+line-a는 라인 하나가 아니라 칸 넷이다(Backend#37). 재고 카메라도 칸별로 판정하므로
+INVENTORY도 칸별로 나간다 — payload는 §10과 같은 스키마에 `binId`를 채운 것이다.
+
+**토픽을 나누는 이유**: retain은 토픽당 마지막 메시지 하나만 남긴다. 칸 넷이
+`line/line-a/inventory` 하나를 공유하면 BE가 재시작했을 때 마지막에 바뀐 칸 하나만
+복원되고 나머지 셋은 사라진다.
+
+| 필드 | 값 |
+|---|---|
+| `binId` | `line-a-bin-a` ~ `line-a-bin-d` (Backend registry.yaml의 binId) |
+| `partId` | 그 칸에 적재되는 부품 (P-101~P-104) — §3의 partId→bin과 역방향 |
+| `areaRatio` | `1.0`(filled) 또는 `0.0`(empty) |
+| `status` | `OK`(filled) / `LOW`(empty) — 진단 필드 |
+
+- 이 카메라는 "부품이 있나 없나"를 볼 뿐 얼마나 찼는지 재지 않는다. 그래서 중간값이
+  없다 — 임계치가 0과 1 사이 어디에 있어도 부족/충분은 갈린다.
+- 판정이 **안정된 칸만**(`stable=true`) 발행한다. 팔이 칸 위를 지나가는 한두 프레임을
+  부족으로 올리면, 사람이 치우지도 않은 칸에 대해 승인 팝업이 뜨고 로봇이 움직인다.
+- 발행 주체는 브리지다(§10.1의 "비전이 직접 발행"에 대한 예외). 판정 노드가 ROS2
+  노드(`stock_monitor_node`)로 이미 존재하고 PC2에서 돌기 때문에, 그 결과를 이미
+  ROS2 도메인에 붙어 있는 브리지가 중계하는 편이 경로가 짧다.
+
+### 10.3 스테이션 준비 상태: `station/{stationId}/readiness` (신설, 2026-08-31)
+
+승인된 보충을 **시작해도 되는지**를 스테이션 하나에 대해 답한다. 웹에서 승인이
+떨어져도 창고에 부품이 없거나 비글이 베이에 없으면 팔은 허공을 집는다.
+
+```json
+{
+  "type": "READINESS", "timestamp": "...", "schemaVersion": 2,
+  "stationId": "station-a", "ready": false,
+  "checks": {"beagle": true, "part": false},
+  "source": "CV_AREA", "cameraId": "cam-warehouse"
+}
+```
+
+- **retain=true**: BE는 승인 요청을 받는 그 순간의 최신값이 필요하다. 구독을 시작한
+  뒤 다음 발행을 기다릴 수 없다.
+- `checks`가 결론과 함께 가는 이유: 사용자에게 "창고가 비었습니다"를 보여주려면
+  `ready:false`만으로는 부족하다.
+- **한 번도 못 받았으면 통과시킬 것**: 비전이 없는 환경(시뮬/개발)에서 이 게이트가
+  모든 승인을 막으면 안 된다.
 
 ### 10a. 발행자 매핑표: `stock_state.json` → INVENTORY (신설)
 
