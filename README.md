@@ -6,34 +6,43 @@
 이 레포는 그 둘을 잇는 **MQTT ↔ ROS2 브리지**를 담는다.
 
 ```
-[비전(YOLO) + 로봇 제어(ROS2)]  ──?──  [이 레포: mqtt_bridge]  ──MQTT──  [Team1SmartFactory/Backend]  ──REST/WS──  [Team1SmartFactory/Frontend]
-  noeyod02/omx-beagle-smart-factory      _dispatch_* 구현 완료,               계약: docs/COMMAND_SCHEMA.md
-  실물 검증 전(ROS2_WIRING.md)          실물 ROS2 환경 검증 전               연결 배관은 라이브 검증 완료
+[비전(CV) + 로봇 제어(ROS2)]  ──MQTT(실물 검증 완료)──  [이 레포: mqtt_bridge]  ──MQTT──  [Team1SmartFactory/Backend]  ──REST/WS──  [Team1SmartFactory/Frontend]
+  noeyod02/omx-beagle-smart-factory                     _dispatch_*/readiness/condition             계약: docs/COMMAND_SCHEMA.md
+  station-a 도착·칸 재고 판정 실물 검증 완료             중계 구현 완료, 실물 검증 완료               연결 배관 실물 검증 완료
 ```
 
-## 지금 상태 (2026-08-21 기준)
+## 지금 상태 (2026-09-01 기준)
 
-- **`_dispatch_*` 4개 구현 완료 (2026-08-21)**, `docs/ROS2_WIRING.md` 사양대로 —
-  단 실제 ROS2 환경/실물 로봇으로는 아직 검증 전(단위 테스트만 통과). 커맨드
-  파싱·라우팅·LWT·중복 멱등성·만료 검사 배관은 실제 브로커로 라이브 검증 완료.
+- **station A 비글 존재 확인 + line-a 칸(bin) 자동 부족 감지, 실물 검증까지 완료.**
+  비전 저장소(`noeyod02/omx-beagle-smart-factory`)가 `/stock/status`(칸 filled/empty)와
+  `/stock/station_a_ready`(`{beagle, part}` 체크)를 발행하면, 이 레포의 `bridge_node.py`가
+  안정화 필터링 후 각각 `line/{lineId}/bin/{label}/inventory`와
+  `station/{stationId}/readiness`로 MQTT 중계 → Backend가 칸 단위 `ShortageEvent`
+  자동 생성 + 승인 직전 station 준비 상태 게이팅(`app/core/readiness.py`) → Frontend
+  반영까지 전부 실물 로봇/카메라로 검증 완료. 정확도도 실사용 기준으로 충분한 것으로
+  확인됨(2026-09-01).
+- **`_dispatch_*` 4개 + `RESUME`(멈춘 팔 복구) + `CONDITION`(blocked 보고)** 모두
+  실물 ROS2 환경/실물 로봇으로 검증 완료 — 더 이상 단위 테스트뿐인 상태가 아님.
 - **`scripts/mock_robot.py` + `scripts/mock_vision.py`로 Backend와의 MQTT
   왕복 전체를 실제로 검증 완료.** 로컬 Mosquitto + Backend + 두 mock 스크립트를
   같이 띄우고, `PUT /api/lines/{id}/stock`(관리자 수동 지정)으로 부족 이벤트를
   만들었더니 PICK_LOAD → MOVE_TO → UNLOAD_RESUME → MOVE_TO(복귀) 4단계가 전부
   mock 로봇 응답으로 끝까지 진행되고, 라인이 `restocking` → `normal`로 정확히
   복귀하는 것까지 확인함. 재고(`line/{id}/inventory`) 경로도 currentQty 갱신·
-  이력 DB 적재·WS 브로드캐스트까지 정상 동작 확인. (자세한 건 "빠른 시작" 참고)
+  이력 DB 적재·WS 브로드캐스트까지 정상 동작 확인. (자세한 건 "빠른 시작" 참고,
+  단 line-a는 이제 실물 칸 단위 검증이 끝나 mock 없이도 실동작함 — mock은 시뮬
+  라인(line-b~f)용으로 계속 유효)
 - INVENTORY 임계치 이하 감지 시 승인 대기 이벤트 자동 생성도 Backend 쪽에 구현·
   라이브 검증 완료 — 관리자 수동 지정 없이도 부족 감지부터 로봇 4단계까지
   전부 자동으로 도는 것까지 확인함.
-- 다음 단계는 ROS2 환경에서 실제 브리지 + 실물 로봇 스택으로 검증하는 것
-  (README "채워야 할 것" 참고).
-- 로봇 제어(ROS2)/비전(YOLO) 쪽 실제 코드는 이 레포에 없다 — 위치 **확인 완료
+- 로봇 제어(ROS2)/비전(CV) 쪽 실제 코드는 이 레포에 없다 — 위치 **확인 완료
   (2026-08-20)**: `github.com/noeyod02/omx-beagle-smart-factory`의
   `open_manipulator_playground` 패키지다 (PC1 `/home/itec/open_manipulator`,
   PC2 `~/ros2_ws/src/open_manipulator`). 실제 토픽/노드 기준의 배선 계획은
-  **[`docs/ROS2_WIRING.md`](docs/ROS2_WIRING.md)** 로 정리했다 — topic_map.py의
-  추정값(raw 액션 직접 호출)은 그 문서대로 태스크 매니저 계층으로 바꿔야 한다.
+  **[`docs/ROS2_WIRING.md`](docs/ROS2_WIRING.md)** 로 정리했다. 참고로 재고/도착
+  판정은 YOLO 객체 탐지가 아니라 **면적비 기반 CV 판정**(`InventorySource.CV_AREA`)이다.
+- station B/C용 readiness는 아직 배선 전 — 지금은 station-a만 하드코딩 구독
+  (`bridge_node.py`의 `STATION_READY_TOPIC`). 필요해지면 그때 확장.
 
 ## 빠른 시작 — mock으로 Backend 연결 왕복 검증
 
@@ -103,19 +112,19 @@ Hardware/
    기준 실제 토픽으로 교체함 (팔은 raw Action이 아니라 스테이션 태스크 매니저의
    transfer/state 토픽).
 2. ~~`mqtt_bridge/bridge_node.py`의 `_dispatch_*` 메서드 4개~~ — **완료
-   (2026-08-21)**, `docs/ROS2_WIRING.md` §3 사양대로 구현함. ⚠️ 단 **실제 ROS2
-   환경/실물 로봇으로는 아직 검증 전** — 단위 테스트(`test_topic_map.py`)와
-   문법 검사만 통과한 상태다. ROS2 환경에서 브리지 + 실물 스택을 띄우고
-   `mosquitto_pub`으로 커맨드 4종을 손으로 넣어 STATUS가 스키마대로 돌아오는지
-   확인하는 게 다음 단계(ROS2_WIRING.md §6 DoD 2번).
-3. **`line/{lineId}/inventory` 발행** — 지금은 `scripts/mock_vision.py`가 대신
-   흘려보내고 있음(임시). 로봇 저장소의 `stock_monitor_node`가 있긴 하지만 셀
-   재배치로 ROI가 플레이스홀더 상태라 카메라 캘리브레이션 전까지는 계속
-   mock으로 대체한다(ROS2_WIRING.md §5).
+   (2026-08-21), 실물 ROS2 환경/실물 로봇 검증까지 완료 (2026-09-01)**,
+   `docs/ROS2_WIRING.md` §3 사양대로 구현함.
+3. ~~`line/{lineId}/bin/{label}/inventory`·`station/{stationId}/readiness` 발행~~
+   — **완료, 실물 검증 완료 (2026-09-01)**. 로봇 저장소의 `stock_monitor_node`/
+   `stock_arrival_node`가 실제 카메라 캘리브레이션을 마치고 칸 filled/empty·
+   station-a beagle 도착 여부를 발행 중이며, 정확도도 실사용 기준 충분함을 확인함.
+   line-a 외 시뮬 라인(line-b~f)의 `line/{lineId}/inventory`는 여전히
+   `scripts/mock_vision.py`가 대신 흘려보낸다(의도된 동작 — 실물이 없는 라인이므로).
 4. ~~`scripts/mock_robot.py` 삭제~~ → 시뮬 라인(line-b~f)의 가상 robotId 응답을
    계속 맡아야 해서 삭제 대신 **실기 robotId 제외가 기본값**이 되도록 스코프를
-   줄였다(이슈 #15) — 이제 실기 브리지와 같이 띄워도 안전하다. `mock_vision.py`는
-   3번이 풀릴 때까지 유지.
+   줄였다(이슈 #15) — 실기 브리지와 같이 띄워도 안전하며, 계속 유지한다.
+5. station B/C용 readiness 배선 — 필요해지면 진행 (현재는 station-a만 지원,
+   범위 밖 아님/우선순위 낮음으로 보류).
 
 ⚠️ **운영 규칙**: 대시보드 연동 모드에서는 로봇 저장소의 `/stock/refill_request`를
 아무도 발행하면 안 된다 — Backend orchestrator와 로봇 저장소의
